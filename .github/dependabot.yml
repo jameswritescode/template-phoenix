@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # Hex packages (mix.exs / mix.lock)
+  - package-ecosystem: "mix"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      hex-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+
+  # JS packages managed by pnpm (assets/package.json / pnpm-lock.yaml)
+  - package-ecosystem: "npm"
+    directory: "/assets"
+    schedule:
+      interval: "weekly"
+    groups:
+      js-minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
