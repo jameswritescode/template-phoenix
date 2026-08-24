@@ -7,78 +7,65 @@ description: Use when a task adds tables, writes or tests migrations, alters sch
 
 The shared dev database (`template_phoenix_dev`) belongs to the user's running
 server and other agents. Schema-changing or data-heavy work runs in its own
-partition database instead.
+partition database.
 
 ## Use your own partition
 
-Derive a snake_case partition name from your task (e.g. `audit_logs_backfill`)
-and carry `DB_PARTITION=<name>` on every stateful mix command; it targets
-`template_phoenix_dev_<name>`:
+Derive a snake_case name from your task and set up in one command — every mix
+command accepts the same prefix and targets `template_phoenix_dev_<name>`:
 
 ```sh
-DB_PARTITION=audit_logs_backfill mise exec -- mix ecto.create
-DB_PARTITION=audit_logs_backfill mise exec -- mix ecto.migrate
-DB_PARTITION=audit_logs_backfill mise exec -- mix run priv/repo/seeds.exs
+DB_PARTITION=audit_logs_backfill mise exec -- mix ecto.setup
 ```
 
-- **Set-and-forget per worktree**: instead of prefixing every command, pin the
-  partition once with `echo 'DB_PARTITION=<name>' > .env` — mise loads it for
-  every command in that directory. Note mise-managed env overrides shell vars:
-  with a `.env` pin in place, `DB_PARTITION=other mise exec -- mix ...` still
-  uses the pin; to override one command, use
-  `mise exec -- env DB_PARTITION=other mix ...`.
+- **Pin it per worktree**: `echo 'DB_PARTITION=<name>' > .env` — mise then
+  loads it for every command in that directory. mise env beats shell vars, so
+  with a pin in place `DB_PARTITION=other mise exec -- mix ...` still uses the
+  pin; override one command with `mise exec -- env DB_PARTITION=other mix ...`
 - **Standing rule**: while schema work is in flight, never run a bare
   `mix ecto.migrate`, `ecto.rollback`, `ecto.reset`, or backfill `mix run` —
-  bare commands hit the shared database. The shared database receives your
-  migration through the normal merge flow, not during development.
+  bare commands hit the shared database, which receives your migration through
+  merge, not during development
 - **Tests**: `MIX_TEST_PARTITION=<name> mise exec -- mix test` targets
-  `template_phoenix_test_<name>`, isolating concurrent suite runs across
-  worktrees (bare name; the underscore is added for you, same as DB_PARTITION).
-- **Tophatting**: combine with the tophat skill:
-  `DB_PARTITION=<name> mise exec -- mix server --subdomain tophat-<task>`.
+  `template_phoenix_test_<name>` (bare name, underscore added automatically)
+- **Tophatting**: `DB_PARTITION=<name> mise exec -- mix server --subdomain tophat-<task>`
 
 ## Realistic data for backfills
 
-`mix ecto.setup` gives you schema + seeds only. To exercise a backfill against
-realistic dev data, clone the shared database:
+`ecto.setup` gives schema + seeds only. Clone the shared database when you
+need real data:
 
 ```sh
 psql -d postgres -c "CREATE DATABASE template_phoenix_dev_<name> TEMPLATE template_phoenix_dev"
 ```
 
-If this fails with "source database is being accessed by other users", that is
-expected while anything is connected to the shared DB — never kill those
-connections (they are the user's). Fall back to `ecto.setup` plus seeding the
-data your backfill needs.
+Failing with "source database is being accessed by other users" is expected
+while anything is connected — never kill those connections (they are the
+user's). Fall back to `ecto.setup` plus seeding what your backfill needs.
 
 ## Verify migrations both ways
 
-- `DB_PARTITION=<name> mise exec -- mix ecto.migrations` — new migration shows `up`
-- `DB_PARTITION=<name> mise exec -- mix ecto.rollback --step 1` then re-migrate —
-  proves the migration is reversible before anyone else runs it
+With your `DB_PARTITION` set:
 
-## SQLite projects (ecto_sqlite3)
-
-Some projects derived from this template swap Postgres for SQLite. The same
-partition workflow and rules apply — the database is a file, so the
-engine-specific commands change:
-
-- `config/dev.exs` shape: `database: "template_phoenix_dev#{db_partition}.db"` —
-  `DB_PARTITION` selects a separate database file, same env var, same naming
-- **Realistic data**: never `cp` a live SQLite file (you'd catch a mid-write
-  state and miss WAL content); use the online backup API instead:
-
-  ```sh
-  sqlite3 template_phoenix_dev.db ".backup template_phoenix_dev_<name>.db"
-  ```
-
-- **Leak check**: partition databases are just files —
-  `ls template_phoenix_dev_*.db*`
-- **Cleanup**: `DB_PARTITION=<name> mise exec -- mix ecto.drop`, or delete the
-  file together with its `-wal`/`-shm` siblings
+- `mix ecto.migrations` — the new migration shows `up`
+- `mix ecto.rollback --step 1`, then re-migrate — reversibility proven before
+  anyone else runs it
 
 ## Cleanup — required
 
 - `DB_PARTITION=<name> mise exec -- mix ecto.drop`
 - `MIX_ENV=test MIX_TEST_PARTITION=<name> mise exec -- mix ecto.drop` if you ran tests
-- Check nothing leaked: `psql -d postgres -Atc "SELECT datname FROM pg_database WHERE datname LIKE 'template_phoenix_%_%'"`
+- Leak check: `psql -d postgres -Atc "SELECT datname FROM pg_database WHERE datname LIKE 'template_phoenix_%_%'"`
+
+## SQLite projects (ecto_sqlite3)
+
+Some derived projects swap Postgres for SQLite. Same workflow, same rules —
+the database is a file, so three commands differ:
+
+- **Clone**: `sqlite3 template_phoenix_dev.db ".backup template_phoenix_dev_<name>.db"` —
+  never `cp` a live file (mid-write state, missed WAL content)
+- **Leak check**: `ls template_phoenix_dev_*.db*`
+- **Drop**: `ecto.drop` as above, or delete the file with its `-wal`/`-shm`
+  siblings
+
+(`config/dev.exs` shape: `database: "template_phoenix_dev#{db_partition}.db"`)
