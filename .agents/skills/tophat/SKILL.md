@@ -13,14 +13,17 @@ Servers already listening (on 4000, 4001, ...) may belong to the user or other
 projects. Do not probe them, read their process info, or restart them. Instead:
 
 ```sh
-mise exec -- mix server --subdomain tophat
+mise exec -- mix server --subdomain tophat-<your-task>
 ```
 
+- **Always pass `--subdomain`, and make the name yours**: derive it from what
+  you are tophatting (branch or feature name, e.g. `tophat-checkout-flow`).
+  Never plain `localhost` and never a subdomain another agent or the user may
+  be using — the subdomain is what isolates your cookies, sessions, and origin
+  from theirs
 - Picks the first free port in 4000-4500 automatically and prints
-  `Starting server on http://tophat.localhost:<port>` — parse that URL from the
-  output; no `lsof` surveying needed
-- `--subdomain` isolates cookies and origin from the user's own `localhost`
-  sessions; any name works (`tophat`, a branch name, ...)
+  `Starting server on http://tophat-<your-task>.localhost:<port>` — parse that
+  URL from the output; no `lsof` surveying needed
 - `--port N` forces a specific port if you need one
 
 Run it in the background with output captured to a log file. Poll with `curl`
