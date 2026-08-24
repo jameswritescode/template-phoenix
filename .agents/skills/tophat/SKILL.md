@@ -18,9 +18,9 @@ mise exec -- mix server --subdomain tophat-<your-task>
 
 - **Always pass `--subdomain`, and make the name yours**: derive it from what
   you are tophatting (branch or feature name, e.g. `tophat-checkout-flow`).
-  Never plain `localhost` and never a subdomain another agent or the user may
-  be using — the subdomain is what isolates your cookies, sessions, and origin
-  from theirs
+  Never plain `localhost`, never bare `tophat`, and never a subdomain another
+  agent or the user may be using — the subdomain is what isolates your cookies,
+  sessions, and origin from theirs
 - Picks the first free port in 4000-4500 automatically and prints
   `Starting server on http://tophat-<your-task>.localhost:<port>` — parse that
   URL from the output; no `lsof` surveying needed
