@@ -1,0 +1,33 @@
+# Project configuration for worktrunk (wt) — hooks for this Phoenix app.
+# Hook types and template variables: https://worktrunk.dev/hook/
+#
+# Commands run through `mise exec` so the pinned toolchain and the
+# worktree-local .env apply. pre-start writes that .env with per-branch
+# values (see "Environment variables" and "Database partitions" in the
+# README): every worktree gets an isolated dev database, an isolated test
+# database, and a stable dev port derived from the branch name.
+
+# Blocking, once, when a worktree is created: trust the mise config at the
+# new path, pin per-branch env, then install deps, create the partitioned
+# database, and build assets (mix setup also runs pnpm install).
+pre-start = """
+mise trust >/dev/null && \
+printf 'PORT=%s\\nDB_PARTITION=%s\\nMIX_TEST_PARTITION=%s\\n' \
+  '{{ branch | hash_port }}' '{{ branch | sanitize_db }}' '{{ branch | sanitize_db }}' > .env && \
+mise exec -- mix setup
+"""
+
+# Blocking, during wt merge (after rebase, before merging to target):
+# the full quality gate, then JS tests.
+pre-merge = "mise exec -- mix precommit && mise exec -- mix cmd --cd assets pnpm test"
+
+# Blocking, before worktree deletion: drop this branch's partition
+# databases. Partitions are passed explicitly via env(1) — which overrides
+# the worktree .env — so the shared dev/test databases are never targeted,
+# even if .env was edited or deleted. A failing drop (e.g. a server still
+# connected) aborts removal, which is the safe direction.
+pre-remove = "mise exec -- env DB_PARTITION={{ branch | sanitize_db }} mix ecto.drop && mise exec -- env MIX_ENV=test MIX_TEST_PARTITION={{ branch | sanitize_db }} mix ecto.drop"
+
+# URL column in `wt list` — matches the PORT pinned by pre-start.
+[list]
+url = "http://localhost:{{ branch | hash_port }}"
