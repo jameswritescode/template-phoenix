@@ -56,6 +56,42 @@ defmodule Mix.Tasks.Skills.LinkTest do
     assert {:error, :enoent} = File.lstat(Path.join(target, "tophat"))
   end
 
+  describe "check!/2" do
+    test "passes when everything is linked", %{source: source, target: target} do
+      make_skill(source, "tophat")
+      Link.sync(source, target)
+
+      assert :ok = Link.check!(source, target)
+    end
+
+    test "raises listing missing links", %{source: source, target: target} do
+      make_skill(source, "tophat")
+
+      assert_raise Mix.Error, ~r/missing or wrong link: tophat/, fn ->
+        Link.check!(source, target)
+      end
+    end
+
+    test "raises listing dangling links", %{source: source, target: target} do
+      make_skill(source, "tophat")
+      Link.sync(source, target)
+      File.rm_rf!(Path.join(source, "tophat"))
+
+      assert_raise Mix.Error, ~r/dangling link: tophat/, fn ->
+        Link.check!(source, target)
+      end
+    end
+
+    test "treats real (Claude-only) directories as ok", %{source: source, target: target} do
+      claude_only = Path.join(target, "claude-only")
+      File.mkdir_p!(claude_only)
+      File.write!(Path.join(claude_only, "SKILL.md"), "x")
+      make_skill(source, "claude-only")
+
+      assert :ok = Link.check!(source, target)
+    end
+  end
+
   test "leaves real directories in target alone", %{source: source, target: target} do
     make_skill(source, "tophat")
     claude_only = Path.join(target, "tophat")
