@@ -1,0 +1,8 @@
+# Whitelist for `wt step copy-ignored` (run by the pre-start hook): gitignored
+# build caches copied from the primary worktree so new worktrees start warm.
+# deps + compiled BEAM output (includes dialyzer project PLTs and the
+# esbuild/tailwind binaries) + JS packages. Deliberately NOT .env — the
+# pre-start hook writes a fresh one with per-branch pins.
+deps/
+_build/
+assets/node_modules/

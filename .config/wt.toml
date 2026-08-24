@@ -8,10 +8,13 @@
 # database, a stable dev port, and a branch-derived .localhost subdomain.
 
 # Blocking, once, when a worktree is created: trust the mise config at the
-# new path, pin per-branch env, then install deps, create the partitioned
-# database, and build assets (mix setup also runs pnpm install).
+# new path, copy build caches from the primary worktree (deps, _build with
+# its dialyzer PLTs, node_modules — whitelist in .worktreeinclude), pin
+# per-branch env, then mix setup (fast against the warm caches: deps.get
+# is a no-op, ecto.setup creates only the partition database).
 pre-start = """
 mise trust >/dev/null && \
+wt step copy-ignored && \
 printf 'PORT=%s\\nSUBDOMAIN=%s\\nDB_PARTITION=%s\\nMIX_TEST_PARTITION=%s\\n' \
   '{{ branch | hash_port }}' '{{ branch | sanitize_db | replace("_", "-") }}' \
   '{{ branch | sanitize_db }}' '{{ branch | sanitize_db }}' > .env && \
