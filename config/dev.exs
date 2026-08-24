@@ -2,8 +2,8 @@ import Config
 
 # Configure your database
 config :template_phoenix, TemplatePhoenix.Repo,
-  username: "postgres",
-  password: "postgres",
+  username: "template_phoenix",
+  password: "template_phoenix",
   hostname: "localhost",
   database: "template_phoenix_dev",
   stacktrace: true,
