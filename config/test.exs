@@ -1,5 +1,13 @@
 import Config
 
+# MIX_TEST_PARTITION suffixes the test database name, same normalized form as
+# DB_PARTITION in dev.exs: bare names, underscore added automatically.
+test_partition =
+  case System.get_env("MIX_TEST_PARTITION") do
+    nil -> ""
+    partition -> "_" <> partition
+  end
+
 # Configure your database
 #
 # The MIX_TEST_PARTITION environment variable can be used
@@ -9,7 +17,7 @@ config :template_phoenix, TemplatePhoenix.Repo,
   username: "template_phoenix",
   password: "template_phoenix",
   hostname: "localhost",
-  database: "template_phoenix_test#{System.get_env("MIX_TEST_PARTITION")}",
+  database: "template_phoenix_test#{test_partition}",
   pool: Ecto.Adapters.SQL.Sandbox,
   pool_size: System.schedulers_online() * 2
 
