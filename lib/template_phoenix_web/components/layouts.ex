@@ -5,6 +5,8 @@ defmodule TemplatePhoenixWeb.Layouts do
   """
   use TemplatePhoenixWeb, :html
 
+  alias Phoenix.LiveView.Rendered
+
   # Embed all files in layouts/* within this module.
   # The default root.html.heex file contains the HTML
   # skeleton of your application, namely HTML headers
@@ -33,6 +35,7 @@ defmodule TemplatePhoenixWeb.Layouts do
 
   slot :inner_block, required: true
 
+  @spec app(map()) :: Rendered.t()
   def app(assigns) do
     ~H"""
     <header class="navbar px-4 sm:px-6 lg:px-8">
@@ -82,6 +85,7 @@ defmodule TemplatePhoenixWeb.Layouts do
   attr :flash, :map, required: true, doc: "the map of flash messages"
   attr :id, :string, default: "flash-group", doc: "the optional id of flash container"
 
+  @spec flash_group(map()) :: Rendered.t()
   def flash_group(assigns) do
     ~H"""
     <div id={@id} aria-live="polite">
@@ -126,6 +130,7 @@ defmodule TemplatePhoenixWeb.Layouts do
 
   See <head> in root.html.heex which applies the theme before page load.
   """
+  @spec theme_toggle(map()) :: Rendered.t()
   def theme_toggle(assigns) do
     ~H"""
     <div class="card relative flex flex-row items-center border-2 border-base-300 bg-base-300 rounded-full">

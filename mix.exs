@@ -41,6 +41,7 @@ defmodule TemplatePhoenix.MixProject do
   defp deps do
     [
       {:phoenix, "~> 1.8.12"},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
       {:phoenix_ecto, "~> 4.5"},
       {:ecto_sql, "~> 3.13"},
       {:postgrex, ">= 0.0.0"},
@@ -95,7 +96,13 @@ defmodule TemplatePhoenix.MixProject do
         "esbuild template_phoenix --minify",
         "phx.digest"
       ],
-      precommit: ["compile --warnings-as-errors", "deps.unlock --unused", "format", "test"]
+      precommit: [
+        "compile --warnings-as-errors",
+        "deps.unlock --unused",
+        "format",
+        "credo --strict",
+        "test"
+      ]
     ]
   end
 end
