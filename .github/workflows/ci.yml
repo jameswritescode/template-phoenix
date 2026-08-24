@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  MIX_ENV: test
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: template_phoenix
+          POSTGRES_PASSWORD: template_phoenix
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installs the exact toolchain pinned in mise.toml (erlang, elixir,
+      # node, pnpm) and caches it keyed on that file.
+      - uses: jdx/mise-action@v2
+
+      - name: Cache mix deps, build, and dialyzer PLTs
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+            ~/.cache/dialyxir
+          key: mix-${{ runner.os }}-${{ hashFiles('mise.toml') }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            mix-${{ runner.os }}-${{ hashFiles('mise.toml') }}-
+
+      - run: mix deps.get
+
+      # compile --warnings-as-errors, deps.unlock --unused, format,
+      # skills.link --check, credo --strict, dialyzer, test
+      - run: mix precommit
+
+      - name: JS dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: assets
+
+      - name: JS tests
+        run: pnpm test
+        working-directory: assets
