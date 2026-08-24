@@ -43,6 +43,16 @@ To start your Phoenix server:
 
 Now you can visit [`localhost:4000`](http://localhost:4000) from your browser.
 
+### `mix server`
+
+A wrapper around `mix phx.server` with optional flags:
+
+* `mix server` - picks the first free port in 4000-4500 automatically
+* `mix server --port 5001` - uses the given port (any port, not just the default range)
+* `mix server --subdomain myapp` - serves at `http://myapp.localhost:<port>`; the
+  endpoint treats that host as its own, and `*.localhost` resolves to loopback
+  without any hosts-file changes
+
 ### Testing
 
 * Elixir: `mix test`

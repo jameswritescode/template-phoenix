@@ -12,7 +12,7 @@ defmodule TemplatePhoenix.MixProject do
       deps: deps(),
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
       listeners: [Phoenix.CodeReloader],
-      dialyzer: [plt_add_apps: [:ex_unit]],
+      dialyzer: [plt_add_apps: [:ex_unit, :mix]],
       usage_rules: usage_rules()
     ]
   end
