@@ -63,6 +63,13 @@ When a new skill is added (by hand or by `mix usage_rules.sync`), run
 `mix skills.link` — it creates missing per-skill symlinks, repoints wrong
 ones, and prunes dangling links for removed skills.
 
+### Database partitions
+
+Schema-changing or backfill work shouldn't share the main dev database.
+`DB_PARTITION=<name>` suffixes the dev database (`template_phoenix_dev_<name>`)
+for every mix command, e.g. `DB_PARTITION=checkout_backfill mix ecto.setup`.
+Drop it when done: `DB_PARTITION=checkout_backfill mix ecto.drop`.
+
 ### Testing
 
 * Elixir: `mix test`

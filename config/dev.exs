@@ -1,11 +1,20 @@
 import Config
 
+# DB_PARTITION suffixes the dev database name (mirroring MIX_TEST_PARTITION),
+# giving schema-changing or backfill work an isolated database. See the
+# database-partition skill in .agents/skills.
+db_partition =
+  case System.get_env("DB_PARTITION") do
+    nil -> ""
+    partition -> "_" <> partition
+  end
+
 # Configure your database
 config :template_phoenix, TemplatePhoenix.Repo,
   username: "template_phoenix",
   password: "template_phoenix",
   hostname: "localhost",
-  database: "template_phoenix_dev",
+  database: "template_phoenix_dev#{db_partition}",
   stacktrace: true,
   show_sensitive_data_on_connection_error: true,
   pool_size: 10
