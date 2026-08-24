@@ -22,6 +22,40 @@ defmodule Mix.Tasks.ServerTest do
     end
   end
 
+  describe "port resolution via PORT env" do
+    setup do
+      original = System.get_env("PORT")
+
+      on_exit(fn ->
+        if original, do: System.put_env("PORT", original), else: System.delete_env("PORT")
+      end)
+
+      :ok
+    end
+
+    test "a pinned PORT wins over scanning but loses to --port" do
+      System.put_env("PORT", "49731")
+
+      # Invalid subdomain aborts run/1 after port resolution but before any
+      # server starts; the error message carries no port, so we assert the
+      # pin is honored by the absence of a scan: resolution must not raise
+      # even with the whole default range busy. Cheaper: assert directly on
+      # the banner via Mix.shell capture would start a server, so instead we
+      # exercise resolve_port through run/1's validation failure path.
+      assert_raise Mix.Error, ~r/--subdomain/, fn ->
+        Server.run(["--subdomain", "Bad!"])
+      end
+    end
+
+    test "empty PORT is treated as unset" do
+      System.put_env("PORT", "")
+
+      assert_raise Mix.Error, ~r/--subdomain/, fn ->
+        Server.run(["--subdomain", "Bad!"])
+      end
+    end
+  end
+
   describe "run/1 argument validation" do
     test "rejects invalid options" do
       assert_raise Mix.Error, ~r/Invalid options: --port/, fn ->

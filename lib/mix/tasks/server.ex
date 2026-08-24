@@ -10,9 +10,10 @@ defmodule Mix.Tasks.Server do
 
   ## Options
 
-    * `--port` - the port to bind. When omitted, the first free port in the
-      `#{inspect(@port_range)}` range is used. A provided port is used as-is,
-      even outside that range.
+    * `--port` - the port to bind. When omitted, a `PORT` env var (e.g. the
+      per-worktree pin written by the worktrunk pre-start hook) is used; when
+      neither is set, the first free port in the `#{inspect(@port_range)}`
+      range is used. A provided port is used as-is, even outside that range.
 
     * `--subdomain` - serves the app at `http://<subdomain>.localhost`, setting
       the endpoint's URL host (via the `PHX_HOST` env var read by
@@ -62,11 +63,18 @@ defmodule Mix.Tasks.Server do
       Mix.raise("No free port found in #{inspect(range)}. Pass --port to choose one explicitly.")
   end
 
-  defp resolve_port(nil), do: find_free_port(@port_range)
+  defp resolve_port(nil), do: env_port() || find_free_port(@port_range)
   defp resolve_port(port) when port in 1..65_535, do: port
 
   defp resolve_port(port) do
     Mix.raise("--port must be between 1 and 65535, got: #{port}")
+  end
+
+  defp env_port do
+    case System.get_env("PORT") do
+      empty when empty in [nil, ""] -> nil
+      port -> String.to_integer(port)
+    end
   end
 
   defp validate_subdomain!(subdomain) do

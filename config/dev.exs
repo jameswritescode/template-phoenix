@@ -9,6 +9,12 @@ db_partition =
     partition -> "_" <> partition
   end
 
+port_env =
+  case System.get_env("PORT") do
+    empty when empty in [nil, ""] -> nil
+    port -> port
+  end
+
 # Configure your database
 config :template_phoenix, TemplatePhoenix.Repo,
   username: "template_phoenix",
@@ -28,7 +34,7 @@ config :template_phoenix, TemplatePhoenix.Repo,
 config :template_phoenix, TemplatePhoenixWeb.Endpoint,
   # Binding to loopback ipv4 address prevents access from other machines.
   # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
-  http: [ip: {127, 0, 0, 1}, port: String.to_integer(System.get_env("PORT") || "4000")],
+  http: [ip: {127, 0, 0, 1}, port: String.to_integer(port_env || "4000")],
   url: [host: System.get_env("PHX_HOST") || "localhost"],
   check_origin: false,
   code_reloader: true,
