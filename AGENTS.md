@@ -44,6 +44,21 @@ custom classes must fully style the input
 - Focus on **delightful details** like hover effects, loading states, and smooth page transitions
 
 
+### Observability
+
+- Add logging, telemetry, and instrumentation where applicable when building or changing features. Follow the existing `TemplatePhoenixWeb.Telemetry` patterns for metrics
+- Every PR description must explain what observability was added (logs, metrics, instrumentation) and suggest alerts and charts that would be useful for monitoring the change
+
+### Code comments
+
+- **Never** leave narrative comments: comments that restate what the code does or narrate the editing process (e.g. "now we check the user", "changed this to use X", "added error handling")
+- Comment only to explain non-obvious intent, constraints, or gotchas the code cannot express itself
+
+### Reusable UI components
+
+- Bias toward **using existing reusable components** (see `core_components.ex`) instead of writing one-off markup
+- When new UI is needed, bias toward **building it as a reusable component** with attrs and slots so it can be shared, rather than duplicating markup across templates
+
 <!-- usage-rules-start -->
 <!-- igniter-start -->
 ## igniter usage
