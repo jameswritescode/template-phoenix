@@ -31,7 +31,7 @@ jobs:
 
       # Installs the exact toolchain pinned in mise.toml (erlang, elixir,
       # node, pnpm) and caches it keyed on that file.
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@v4
 
       - name: Cache mix deps, build, and dialyzer PLTs
         uses: actions/cache@v6
@@ -83,7 +83,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: jdx/mise-action@v2
+      - uses: jdx/mise-action@v4
 
       # Renames a copy of the committed tree to wombat_app and runs the
       # renamed project's compile + test suite.
