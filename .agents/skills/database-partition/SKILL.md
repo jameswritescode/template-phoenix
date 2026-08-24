@@ -57,6 +57,26 @@ data your backfill needs.
 - `DB_PARTITION=<name> mise exec -- mix ecto.rollback --step 1` then re-migrate —
   proves the migration is reversible before anyone else runs it
 
+## SQLite projects (ecto_sqlite3)
+
+Some projects derived from this template swap Postgres for SQLite. The same
+partition workflow and rules apply — the database is a file, so the
+engine-specific commands change:
+
+- `config/dev.exs` shape: `database: "template_phoenix_dev#{db_partition}.db"` —
+  `DB_PARTITION` selects a separate database file, same env var, same naming
+- **Realistic data**: never `cp` a live SQLite file (you'd catch a mid-write
+  state and miss WAL content); use the online backup API instead:
+
+  ```sh
+  sqlite3 template_phoenix_dev.db ".backup template_phoenix_dev_<name>.db"
+  ```
+
+- **Leak check**: partition databases are just files —
+  `ls template_phoenix_dev_*.db*`
+- **Cleanup**: `DB_PARTITION=<name> mise exec -- mix ecto.drop`, or delete the
+  file together with its `-wal`/`-shm` siblings
+
 ## Cleanup — required
 
 - `DB_PARTITION=<name> mise exec -- mix ecto.drop`
