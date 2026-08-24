@@ -89,6 +89,13 @@ Schema-changing or backfill work shouldn't share the main dev database.
 for every mix command, e.g. `DB_PARTITION=checkout_backfill mix ecto.setup`.
 Drop it when done: `DB_PARTITION=checkout_backfill mix ecto.drop`.
 
+### Monitoring
+
+`GET /health` returns `{"status":"ok","checks":{"database":"ok"}}`, or 503
+when a check fails — point uptime monitors and load balancers at it. Example
+alerts and charts to pair with the telemetry metrics are documented in
+`TemplatePhoenix.Health`.
+
 ### Testing
 
 * Elixir: `mix test`

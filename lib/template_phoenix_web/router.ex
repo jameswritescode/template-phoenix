@@ -14,6 +14,11 @@ defmodule TemplatePhoenixWeb.Router do
     plug :accepts, ["json"]
   end
 
+  # Health check for uptime monitors and load balancers (no pipeline).
+  scope "/", TemplatePhoenixWeb do
+    get "/health", HealthController, :show
+  end
+
   scope "/", TemplatePhoenixWeb do
     pipe_through :browser
 
