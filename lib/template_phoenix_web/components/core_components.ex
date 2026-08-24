@@ -463,7 +463,7 @@ defmodule TemplatePhoenixWeb.CoreComponents do
 
   ## JS Commands
 
-  @spec show(JS.t(), String.t()) :: JS.t()
+  @spec show(struct(), String.t()) :: struct()
   def show(js \\ %JS{}, selector) do
     JS.show(js,
       to: selector,
@@ -475,7 +475,7 @@ defmodule TemplatePhoenixWeb.CoreComponents do
     )
   end
 
-  @spec hide(JS.t(), String.t()) :: JS.t()
+  @spec hide(struct(), String.t()) :: struct()
   def hide(js \\ %JS{}, selector) do
     JS.hide(js,
       to: selector,

@@ -11,7 +11,8 @@ defmodule TemplatePhoenix.MixProject do
       aliases: aliases(),
       deps: deps(),
       compilers: [:phoenix_live_view] ++ Mix.compilers(),
-      listeners: [Phoenix.CodeReloader]
+      listeners: [Phoenix.CodeReloader],
+      dialyzer: [plt_add_apps: [:ex_unit]]
     ]
   end
 
@@ -42,6 +43,7 @@ defmodule TemplatePhoenix.MixProject do
     [
       {:phoenix, "~> 1.8.12"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
       {:phoenix_ecto, "~> 4.5"},
       {:ecto_sql, "~> 3.13"},
       {:postgrex, ">= 0.0.0"},
@@ -101,6 +103,7 @@ defmodule TemplatePhoenix.MixProject do
         "deps.unlock --unused",
         "format",
         "credo --strict",
+        "dialyzer",
         "test"
       ]
     ]
