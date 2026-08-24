@@ -9,6 +9,14 @@ The shared dev database (`template_phoenix_dev`) belongs to the user's running
 server and other agents. Schema-changing or data-heavy work runs in its own
 partition database.
 
+**Already in a worktree?** The partition is ambient, not a choice: worktrunk's
+pre-start hook (and the start-a-task skill's fallback) pins `DB_PARTITION` and
+`MIX_TEST_PARTITION` in `.env`, so bare mix commands are already isolated.
+This skill then governs what still needs judgment: what data your partition
+needs (empty + seeds, or the clone below for backfill realism), the
+reversibility checks, and the standing rules — which apply with full force
+whenever you are *not* pinned (the main checkout).
+
 ## Use your own partition
 
 Derive a snake_case name from your task and set up in one command — every mix
