@@ -105,7 +105,11 @@ defmodule TemplatePhoenix.MixProject do
       "ecto.setup": ["ecto.create", "ecto.migrate", "run priv/repo/seeds.exs"],
       "ecto.reset": ["ecto.drop", "ecto.setup"],
       test: ["ecto.create --quiet", "ecto.migrate --quiet", "test"],
-      "assets.setup": ["tailwind.install --if-missing", "esbuild.install --if-missing"],
+      "assets.setup": [
+        "tailwind.install --if-missing",
+        "esbuild.install --if-missing",
+        "cmd --cd assets pnpm install"
+      ],
       "assets.build": ["compile", "tailwind template_phoenix", "esbuild template_phoenix"],
       "assets.deploy": [
         "tailwind template_phoenix --minify",
@@ -116,6 +120,7 @@ defmodule TemplatePhoenix.MixProject do
         "compile --warnings-as-errors",
         "deps.unlock --unused",
         "format",
+        "skills.link --check",
         "credo --strict",
         "dialyzer",
         "test"
