@@ -40,7 +40,11 @@ defmodule TemplatePhoenix.MixProject do
   defp usage_rules do
     [
       file: "AGENTS.md",
-      usage_rules: [~r/.*/]
+      usage_rules: ["phoenix:all", {:usage_rules, main: false}],
+      skills: [
+        location: ".agents/skills",
+        deps: [:igniter, :usage_rules]
+      ]
     ]
   end
 
