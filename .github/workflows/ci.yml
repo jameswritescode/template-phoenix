@@ -27,7 +27,7 @@ jobs:
           --health-retries 5
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # Installs the exact toolchain pinned in mise.toml (erlang, elixir,
       # node, pnpm) and caches it keyed on that file.
@@ -81,7 +81,7 @@ jobs:
       PGPASSWORD: template_phoenix
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: jdx/mise-action@v2
 
