@@ -5,7 +5,7 @@ import Config
 # database-partition skill in .agents/skills.
 db_partition =
   case System.get_env("DB_PARTITION") do
-    nil -> ""
+    empty when empty in [nil, ""] -> ""
     partition -> "_" <> partition
   end
 

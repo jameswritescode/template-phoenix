@@ -4,7 +4,7 @@ import Config
 # DB_PARTITION in dev.exs: bare names, underscore added automatically.
 test_partition =
   case System.get_env("MIX_TEST_PARTITION") do
-    nil -> ""
+    empty when empty in [nil, ""] -> ""
     partition -> "_" <> partition
   end
 
