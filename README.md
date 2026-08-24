@@ -4,12 +4,17 @@ A Phoenix 1.8 application template.
 
 ## Starting a new project from this template
 
-1. **Rename the app** (snake_case name; the script renames modules, files, and
-   config, then deletes itself — pass `--keep` to retain it):
+1. **Rename the app** (snake_case name):
 
    ```sh
    bin/rename.sh my_app
    ```
+
+   The script rewrites every name variant (`template_phoenix`,
+   `TemplatePhoenix`, `template-phoenix`) across file contents and
+   file/directory names, then deletes itself — pass `--keep` to retain it.
+   It is verified end to end by `bin/test-rename.sh` (also run in CI), which
+   renames a copy of the committed tree and runs its full test suite.
 
 2. **Install tool versions** (Erlang, Elixir, Node, pnpm are pinned in `mise.toml`):
 
