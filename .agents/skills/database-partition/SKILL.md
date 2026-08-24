@@ -21,6 +21,12 @@ DB_PARTITION=audit_logs_backfill mise exec -- mix ecto.migrate
 DB_PARTITION=audit_logs_backfill mise exec -- mix run priv/repo/seeds.exs
 ```
 
+- **Set-and-forget per worktree**: instead of prefixing every command, pin the
+  partition once with `echo 'DB_PARTITION=<name>' > .env` — mise loads it for
+  every command in that directory. Note mise-managed env overrides shell vars:
+  with a `.env` pin in place, `DB_PARTITION=other mise exec -- mix ...` still
+  uses the pin; to override one command, use
+  `mise exec -- env DB_PARTITION=other mix ...`.
 - **Standing rule**: while schema work is in flight, never run a bare
   `mix ecto.migrate`, `ecto.rollback`, `ecto.reset`, or backfill `mix run` —
   bare commands hit the shared database. The shared database receives your

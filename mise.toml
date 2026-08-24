@@ -3,3 +3,6 @@ elixir = "1.20.3-otp-29"
 erlang = "29.0.5"
 node = "26.7.0"
 pnpm = "11.23.0"
+
+[env]
+_.file = ".env"

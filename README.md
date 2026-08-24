@@ -63,6 +63,25 @@ When a new skill is added (by hand or by `mix usage_rules.sync`), run
 `mix skills.link` — it creates missing per-skill symlinks, repoints wrong
 ones, and prunes dangling links for removed skills.
 
+### Environment variables
+
+mise manages env vars — no dotenv library needed. Three layers, all
+per-directory (each worktree gets its own):
+
+* `mise.toml` `[env]` - committed, shared defaults
+* `.env` - gitignored, loaded by mise via `[env] _.file` (e.g.
+  `echo 'DB_PARTITION=my_task' > .env` in a worktree, then forget it)
+* `mise.local.toml` - gitignored personal overrides
+
+With mise activated in your shell these load automatically on `cd`. In
+non-interactive contexts (agents, scripts, CI), prefix commands with
+`mise exec --` so tools and env resolve from the current directory.
+
+Precedence: mise-managed values (`[env]`, `.env`, `mise.local.toml`)
+override variables set in the shell — `DB_PARTITION=x mise exec -- ...`
+loses to a `.env` pin. To override one command, set the var inside the
+exec: `mise exec -- env DB_PARTITION=x mix ecto.drop`.
+
 ### Database partitions
 
 Schema-changing or backfill work shouldn't share the main dev database.

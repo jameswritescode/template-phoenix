@@ -38,3 +38,7 @@ npm-debug.log
 
 # JS dependencies
 assets/node_modules/
+
+# Local environment (mise loads .env via [env] _.file; mise.local.toml is personal overrides)
+.env
+mise.local.toml
