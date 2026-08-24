@@ -53,6 +53,15 @@ A wrapper around `mix phx.server` with optional flags:
   endpoint treats that host as its own, and `*.localhost` resolves to loopback
   without any hosts-file changes
 
+### Agent skills
+
+Skills live canonically in `.agents/skills/` (read natively by Codex).
+`.claude/skills/` contains one symlink per skill, because Claude Code follows
+per-skill symlinks but not a symlinked skills directory
+([claude-code#38051](https://github.com/anthropics/claude-code/issues/38051)).
+When a new skill is added (by hand or by `mix usage_rules.sync`), add a
+matching symlink: `ln -s ../../.agents/skills/<name> .claude/skills/<name>`.
+
 ### Testing
 
 * Elixir: `mix test`
