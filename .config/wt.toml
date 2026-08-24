@@ -5,15 +5,16 @@
 # worktree-local .env apply. pre-start writes that .env with per-branch
 # values (see "Environment variables" and "Database partitions" in the
 # README): every worktree gets an isolated dev database, an isolated test
-# database, and a stable dev port derived from the branch name.
+# database, a stable dev port, and a branch-derived .localhost subdomain.
 
 # Blocking, once, when a worktree is created: trust the mise config at the
 # new path, pin per-branch env, then install deps, create the partitioned
 # database, and build assets (mix setup also runs pnpm install).
 pre-start = """
 mise trust >/dev/null && \
-printf 'PORT=%s\\nDB_PARTITION=%s\\nMIX_TEST_PARTITION=%s\\n' \
-  '{{ branch | hash_port }}' '{{ branch | sanitize_db }}' '{{ branch | sanitize_db }}' > .env && \
+printf 'PORT=%s\\nSUBDOMAIN=%s\\nDB_PARTITION=%s\\nMIX_TEST_PARTITION=%s\\n' \
+  '{{ branch | hash_port }}' '{{ branch | sanitize_db | replace("_", "-") }}' \
+  '{{ branch | sanitize_db }}' '{{ branch | sanitize_db }}' > .env && \
 mise exec -- mix setup
 """
 
@@ -28,6 +29,7 @@ pre-merge = "mise exec -- mix precommit && mise exec -- mix cmd --cd assets pnpm
 # connected) aborts removal, which is the safe direction.
 pre-remove = "mise exec -- env DB_PARTITION={{ branch | sanitize_db }} mix ecto.drop && mise exec -- env MIX_ENV=test MIX_TEST_PARTITION={{ branch | sanitize_db }} mix ecto.drop"
 
-# URL column in `wt list` — matches the PORT pinned by pre-start.
+# URL column in `wt list` — matches the SUBDOMAIN and PORT pinned by
+# pre-start (mix server and phx.server both honor those pins).
 [list]
-url = "http://localhost:{{ branch | hash_port }}"
+url = "http://{{ branch | sanitize_db | replace('_', '-') }}.localhost:{{ branch | hash_port }}"

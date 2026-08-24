@@ -78,6 +78,11 @@ per-directory (each worktree gets its own):
   `echo 'DB_PARTITION=my_task' > .env` in a worktree, then forget it)
 * `mise.local.toml` - gitignored personal overrides
 
+In worktrees created via worktrunk, the pre-start hook pins `PORT`,
+`SUBDOMAIN`, `DB_PARTITION`, and `MIX_TEST_PARTITION` in `.env`
+automatically, all derived from the branch name — `mix server`,
+`mix phx.server`, and `wt list`'s URL column all agree.
+
 With mise activated in your shell these load automatically on `cd`. In
 non-interactive contexts (agents, scripts, CI), prefix commands with
 `mise exec --` so tools and env resolve from the current directory.

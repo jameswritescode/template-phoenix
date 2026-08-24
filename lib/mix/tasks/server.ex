@@ -16,6 +16,9 @@ defmodule Mix.Tasks.Server do
       range is used. A provided port is used as-is, even outside that range.
 
     * `--subdomain` - serves the app at `http://<subdomain>.localhost`, setting
+      the URL host. When omitted, a `SUBDOMAIN` env var (e.g. the per-worktree
+      pin written by the worktrunk pre-start hook) is used instead; when
+      neither is set, the app serves plain `localhost`. The subdomain sets
       the endpoint's URL host (via the `PHX_HOST` env var read by
       `config/dev.exs`) so the server treats it as its hostname and generated
       URLs use it. The chosen port is likewise passed via `PORT`. Browsers and modern system resolvers resolve
@@ -43,7 +46,8 @@ defmodule Mix.Tasks.Server do
     end
 
     port = resolve_port(opts[:port])
-    host = opts[:subdomain] && validate_subdomain!(opts[:subdomain]) <> ".localhost"
+    subdomain = opts[:subdomain] || env_subdomain()
+    host = subdomain && validate_subdomain!(subdomain) <> ".localhost"
 
     System.put_env("PORT", Integer.to_string(port))
     if host, do: System.put_env("PHX_HOST", host)
@@ -82,9 +86,16 @@ defmodule Mix.Tasks.Server do
       subdomain
     else
       Mix.raise(
-        "--subdomain must contain only lowercase letters, digits, and inner hyphens, " <>
-          "got: #{subdomain}"
+        "Subdomain (--subdomain flag or SUBDOMAIN env) must contain only lowercase " <>
+          "letters, digits, and inner hyphens, got: #{subdomain}"
       )
+    end
+  end
+
+  defp env_subdomain do
+    case System.get_env("SUBDOMAIN") do
+      empty when empty in [nil, ""] -> nil
+      subdomain -> subdomain
     end
   end
 

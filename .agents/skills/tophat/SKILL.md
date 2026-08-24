@@ -21,6 +21,9 @@ mise exec -- mix server --subdomain tophat-<your-task>
   Never plain `localhost`, never bare `tophat`, and never a subdomain another
   agent or the user may be using — the subdomain is what isolates your cookies,
   sessions, and origin from theirs
+- Exception: a worktree whose `.env` pins `SUBDOMAIN` (the worktrunk
+  pre-start hook writes one derived from the branch) already satisfies
+  this — `mix server` uses the pin and the flag becomes optional there
 - Picks the first free port in 4000-4500 automatically and prints
   `Starting server on http://tophat-<your-task>.localhost:<port>` — parse that
   URL from the output; no `lsof` surveying needed

@@ -9,6 +9,15 @@ db_partition =
     partition -> "_" <> partition
   end
 
+# URL host: explicit PHX_HOST wins; a SUBDOMAIN pin (see .config/wt.toml)
+# implies <subdomain>.localhost; otherwise plain localhost.
+phx_host =
+  case {System.get_env("PHX_HOST"), System.get_env("SUBDOMAIN")} do
+    {host, _} when host not in [nil, ""] -> host
+    {_, sub} when sub not in [nil, ""] -> sub <> ".localhost"
+    _ -> "localhost"
+  end
+
 port_env =
   case System.get_env("PORT") do
     empty when empty in [nil, ""] -> nil
@@ -35,7 +44,7 @@ config :template_phoenix, TemplatePhoenixWeb.Endpoint,
   # Binding to loopback ipv4 address prevents access from other machines.
   # Change to `ip: {0, 0, 0, 0}` to allow access from other machines.
   http: [ip: {127, 0, 0, 1}, port: String.to_integer(port_env || "4000")],
-  url: [host: System.get_env("PHX_HOST") || "localhost"],
+  url: [host: phx_host],
   check_origin: false,
   code_reloader: true,
   debug_errors: true,

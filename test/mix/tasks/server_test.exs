@@ -56,6 +56,36 @@ defmodule Mix.Tasks.ServerTest do
     end
   end
 
+  describe "subdomain resolution via SUBDOMAIN env" do
+    setup do
+      original = System.get_env("SUBDOMAIN")
+
+      on_exit(fn ->
+        if original,
+          do: System.put_env("SUBDOMAIN", original),
+          else: System.delete_env("SUBDOMAIN")
+      end)
+
+      :ok
+    end
+
+    test "SUBDOMAIN env is used and validated when no flag is given" do
+      System.put_env("SUBDOMAIN", "Bad_Env")
+
+      assert_raise Mix.Error, ~r/got: Bad_Env/, fn ->
+        Server.run(["--port", "4400"])
+      end
+    end
+
+    test "--subdomain beats SUBDOMAIN env" do
+      System.put_env("SUBDOMAIN", "Also_Bad")
+
+      assert_raise Mix.Error, ~r/got: Bad!/, fn ->
+        Server.run(["--subdomain", "Bad!", "--port", "4400"])
+      end
+    end
+  end
+
   describe "run/1 argument validation" do
     test "rejects invalid options" do
       assert_raise Mix.Error, ~r/Invalid options: --port/, fn ->
@@ -76,7 +106,7 @@ defmodule Mix.Tasks.ServerTest do
     end
 
     test "rejects invalid subdomains" do
-      assert_raise Mix.Error, ~r/--subdomain must contain only/, fn ->
+      assert_raise Mix.Error, ~r/must contain only lowercase/, fn ->
         Server.run(["--subdomain", "Bad_Sub!", "--port", "4400"])
       end
     end
