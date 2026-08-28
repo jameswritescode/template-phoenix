@@ -15,6 +15,11 @@ defmodule Mix.Tasks.Server do
       neither is set, the first free port in the `#{inspect(@port_range)}`
       range is used. A provided port is used as-is, even outside that range.
 
+    * `--free-port` - always scan for a free port, ignoring any `PORT` env
+      pin. Meant for agents and scripts starting an extra server (e.g.
+      tophatting) in a worktree whose pinned port belongs to the main dev
+      server. Mutually exclusive with `--port`.
+
     * `--subdomain` - serves the app at `http://<subdomain>.localhost`, setting
       the URL host. When omitted, a `SUBDOMAIN` env var (e.g. the per-worktree
       pin written by the worktrunk pre-start hook) is used instead; when
@@ -35,7 +40,28 @@ defmodule Mix.Tasks.Server do
 
   @impl Mix.Task
   def run(args) do
-    {opts, argv, invalid} = OptionParser.parse(args, strict: [subdomain: :string, port: :integer])
+    opts = parse_args!(args)
+
+    port =
+      if opts[:free_port],
+        do: find_free_port(@port_range),
+        else: resolve_port(opts[:port])
+
+    subdomain = opts[:subdomain] || env_subdomain()
+    host = subdomain && validate_subdomain!(subdomain) <> ".localhost"
+
+    System.put_env("PORT", Integer.to_string(port))
+    if host, do: System.put_env("PHX_HOST", host)
+
+    Mix.shell().info("Starting server on http://#{host || "localhost"}:#{port}")
+    Mix.Task.run("phx.server", [])
+  end
+
+  defp parse_args!(args) do
+    {opts, argv, invalid} =
+      OptionParser.parse(args,
+        strict: [subdomain: :string, port: :integer, free_port: :boolean]
+      )
 
     if invalid != [] do
       Mix.raise("Invalid options: " <> Enum.map_join(invalid, ", ", fn {opt, _} -> opt end))
@@ -45,15 +71,11 @@ defmodule Mix.Tasks.Server do
       Mix.raise("Unexpected arguments: " <> Enum.join(argv, " "))
     end
 
-    port = resolve_port(opts[:port])
-    subdomain = opts[:subdomain] || env_subdomain()
-    host = subdomain && validate_subdomain!(subdomain) <> ".localhost"
+    if opts[:port] && opts[:free_port] do
+      Mix.raise("--port and --free-port are mutually exclusive")
+    end
 
-    System.put_env("PORT", Integer.to_string(port))
-    if host, do: System.put_env("PHX_HOST", host)
-
-    Mix.shell().info("Starting server on http://#{host || "localhost"}:#{port}")
-    Mix.Task.run("phx.server", [])
+    opts
   end
 
   @doc """

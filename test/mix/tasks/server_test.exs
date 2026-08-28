@@ -86,6 +86,33 @@ defmodule Mix.Tasks.ServerTest do
     end
   end
 
+  describe "--free-port" do
+    test "is mutually exclusive with --port" do
+      assert_raise Mix.Error, ~r/mutually exclusive/, fn ->
+        Server.run(["--free-port", "--port", "4400"])
+      end
+    end
+
+    test "supersedes a PORT env pin" do
+      original = System.get_env("PORT")
+
+      on_exit(fn ->
+        if original, do: System.put_env("PORT", original), else: System.delete_env("PORT")
+      end)
+
+      # Pin an un-bindable port: resolution via the pin would keep 1, while
+      # --free-port must scan instead. The invalid subdomain aborts run/1
+      # after port resolution, before any server starts; reaching that error
+      # (rather than binding port 1 later) shows the scan path was taken
+      # without raising.
+      System.put_env("PORT", "1")
+
+      assert_raise Mix.Error, ~r/must contain only lowercase/, fn ->
+        Server.run(["--free-port", "--subdomain", "Bad!"])
+      end
+    end
+  end
+
   describe "run/1 argument validation" do
     test "rejects invalid options" do
       assert_raise Mix.Error, ~r/Invalid options: --port/, fn ->

@@ -23,10 +23,10 @@ mise exec -- mix server --subdomain tophat-<your-task>
   sessions, and origin from theirs
 - In a worktree, the `.env`-pinned `PORT` and `SUBDOMAIN` belong to the
   worktree's main dev server — often the user's, already running. Never take
-  them for tophatting: clear the pin so the free-port scan runs instead:
+  them for tophatting: `--free-port` ignores the pin and scans instead:
 
   ```sh
-  mise exec -- env PORT= mix server --subdomain tophat-<your-task>
+  mise exec -- mix server --free-port --subdomain tophat-<your-task>
   ```
 
 - Picks the first free port in 4000-4500 automatically and prints
