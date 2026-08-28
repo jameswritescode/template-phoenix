@@ -2,6 +2,9 @@ This is a web application written using the Phoenix web framework.
 
 ## Project guidelines
 
+- Before starting any development task, follow the `start-a-task` skill
+  (`.agents/skills/start-a-task/`): work happens in an isolated worktree with
+  pinned env and database partitions — never directly in the user's checkout
 - Use `mix precommit` alias when you are done with all changes and fix any pending issues
 - Use the already included and available `:req` (`Req`) library for HTTP requests, **avoid** `:httpoison`, `:tesla`, and `:httpc`. Req is included by default and is the preferred HTTP client for Phoenix apps
 
@@ -43,6 +46,17 @@ custom classes must fully style the input
 - Ensure **clean typography, spacing, and layout balance** for a refined, premium look
 - Focus on **delightful details** like hover effects, loading states, and smooth page transitions
 
+
+### Testing
+
+- **Never assert against HTML structure with regexes or string patterns** —
+  no `Regex.run(~r/<div class="[^"]*">.../, html)`, no asserting or refuting
+  the presence of CSS classes like `refute html =~ "mb-2"`. Markup and
+  styling classes are presentation, not behavior; tests coupled to them break
+  on every design tweak
+- Assert on semantics instead: rendered text content, or elements located
+  via selectors — `Phoenix.LiveViewTest.element/2` / `has_element?/2`, or
+  LazyHTML queries for controller responses
 
 ### Observability
 
