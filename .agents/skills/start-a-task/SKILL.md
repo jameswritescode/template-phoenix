@@ -54,8 +54,9 @@ mise exec -- mix setup
 
 - Database work follows the database-partition skill's rules (the pins make
   bare mix commands safe here, but its standing rules still apply)
-- Verify user-facing changes with the tophat skill — `mix server` picks up
-  the pinned `SUBDOMAIN` and `PORT` automatically
+- Verify user-facing changes with the tophat skill — note the worktree's
+  pinned `PORT`/`SUBDOMAIN` belong to the main dev server, so tophat servers
+  clear the pin and scan (the skill shows the command)
 - Run `mise exec -- mix precommit` (and `pnpm test` for JS changes) before
   calling the task done
 
