@@ -6,7 +6,7 @@ defmodule TemplatePhoenix.Accounts do
   import Ecto.Query, warn: false
   alias TemplatePhoenix.Repo
 
-  alias TemplatePhoenix.Accounts.{User, UserToken, UserNotifier}
+  alias TemplatePhoenix.Accounts.{User, UserNotifier, UserToken}
 
   ## Database getters
 
@@ -22,6 +22,7 @@ defmodule TemplatePhoenix.Accounts do
       nil
 
   """
+  @spec get_user_by_email(String.t()) :: User.t() | nil
   def get_user_by_email(email) when is_binary(email) do
     Repo.get_by(User, email: email)
   end
@@ -38,6 +39,7 @@ defmodule TemplatePhoenix.Accounts do
       nil
 
   """
+  @spec get_user_by_email_and_password(String.t(), String.t()) :: User.t() | nil
   def get_user_by_email_and_password(email, password)
       when is_binary(email) and is_binary(password) do
     user = Repo.get_by(User, email: email)
@@ -58,6 +60,7 @@ defmodule TemplatePhoenix.Accounts do
       ** (Ecto.NoResultsError)
 
   """
+  @spec get_user!(integer()) :: User.t()
   def get_user!(id), do: Repo.get!(User, id)
 
   ## User registration
@@ -74,6 +77,7 @@ defmodule TemplatePhoenix.Accounts do
       {:error, %Ecto.Changeset{}}
 
   """
+  @spec register_user(map()) :: {:ok, User.t()} | {:error, Ecto.Changeset.t()}
   def register_user(attrs) do
     %User{}
     |> User.email_changeset(attrs)
@@ -88,6 +92,7 @@ defmodule TemplatePhoenix.Accounts do
   The user is in sudo mode when the last authentication was done no further
   than 20 minutes ago. The limit can be given as second argument in minutes.
   """
+  @spec sudo_mode?(User.t() | nil, integer()) :: boolean()
   def sudo_mode?(user, minutes \\ -20)
 
   def sudo_mode?(%User{authenticated_at: ts}, minutes) when is_struct(ts, DateTime) do
@@ -107,6 +112,7 @@ defmodule TemplatePhoenix.Accounts do
       %Ecto.Changeset{data: %User{}}
 
   """
+  @spec change_user_email(User.t(), map(), keyword()) :: Ecto.Changeset.t()
   def change_user_email(user, attrs \\ %{}, opts \\ []) do
     User.email_changeset(user, attrs, opts)
   end
@@ -116,6 +122,8 @@ defmodule TemplatePhoenix.Accounts do
 
   If the token matches, the user email is updated and the token is deleted.
   """
+  @spec update_user_email(User.t(), String.t()) ::
+          {:ok, User.t()} | {:error, :transaction_aborted}
   def update_user_email(user, token) do
     context = "change:#{user.email}"
 
@@ -143,6 +151,7 @@ defmodule TemplatePhoenix.Accounts do
       %Ecto.Changeset{data: %User{}}
 
   """
+  @spec change_user_password(User.t(), map(), keyword()) :: Ecto.Changeset.t()
   def change_user_password(user, attrs \\ %{}, opts \\ []) do
     User.password_changeset(user, attrs, opts)
   end
@@ -161,6 +170,8 @@ defmodule TemplatePhoenix.Accounts do
       {:error, %Ecto.Changeset{}}
 
   """
+  @spec update_user_password(User.t(), map()) ::
+          {:ok, {User.t(), [UserToken.t()]}} | {:error, Ecto.Changeset.t()}
   def update_user_password(user, attrs) do
     user
     |> User.password_changeset(attrs)
@@ -172,6 +183,7 @@ defmodule TemplatePhoenix.Accounts do
   @doc """
   Generates a session token.
   """
+  @spec generate_user_session_token(User.t()) :: binary()
   def generate_user_session_token(user) do
     {token, user_token} = UserToken.build_session_token(user)
     Repo.insert!(user_token)
@@ -183,6 +195,7 @@ defmodule TemplatePhoenix.Accounts do
 
   If the token is valid `{user, token_inserted_at}` is returned, otherwise `nil` is returned.
   """
+  @spec get_user_by_session_token(binary()) :: {User.t(), DateTime.t()} | nil
   def get_user_by_session_token(token) do
     {:ok, query} = UserToken.verify_session_token_query(token)
     Repo.one(query)
@@ -191,6 +204,7 @@ defmodule TemplatePhoenix.Accounts do
   @doc """
   Gets the user with the given magic link token.
   """
+  @spec get_user_by_magic_link_token(String.t()) :: User.t() | nil
   def get_user_by_magic_link_token(token) do
     with {:ok, query} <- UserToken.verify_magic_link_token_query(token),
          {user, _token} <- Repo.one(query) do
@@ -218,6 +232,8 @@ defmodule TemplatePhoenix.Accounts do
      source of security pitfalls. See the "Mixing magic link and password registration" section of
      `mix help phx.gen.auth`.
   """
+  @spec login_user_by_magic_link(String.t()) ::
+          {:ok, {User.t(), [UserToken.t()]}} | {:error, Ecto.Changeset.t() | :not_found}
   def login_user_by_magic_link(token) do
     {:ok, query} = UserToken.verify_magic_link_token_query(token)
 
@@ -255,6 +271,8 @@ defmodule TemplatePhoenix.Accounts do
       {:ok, %{to: ..., body: ...}}
 
   """
+  @spec deliver_user_update_email_instructions(User.t(), String.t(), (String.t() -> String.t())) ::
+          {:ok, Swoosh.Email.t()} | {:error, term()}
   def deliver_user_update_email_instructions(%User{} = user, current_email, update_email_url_fun)
       when is_function(update_email_url_fun, 1) do
     {encoded_token, user_token} = UserToken.build_email_token(user, "change:#{current_email}")
@@ -266,6 +284,8 @@ defmodule TemplatePhoenix.Accounts do
   @doc """
   Delivers the magic link login instructions to the given user.
   """
+  @spec deliver_login_instructions(User.t(), (String.t() -> String.t())) ::
+          {:ok, Swoosh.Email.t()} | {:error, term()}
   def deliver_login_instructions(%User{} = user, magic_link_url_fun)
       when is_function(magic_link_url_fun, 1) do
     {encoded_token, user_token} = UserToken.build_email_token(user, "login")
@@ -276,6 +296,7 @@ defmodule TemplatePhoenix.Accounts do
   @doc """
   Deletes the signed token with the given context.
   """
+  @spec delete_user_session_token(binary()) :: :ok
   def delete_user_session_token(token) do
     Repo.delete_all(from(UserToken, where: [token: ^token, context: "session"]))
     :ok

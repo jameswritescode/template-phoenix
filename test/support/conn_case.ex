@@ -17,6 +17,8 @@ defmodule TemplatePhoenixWeb.ConnCase do
 
   use ExUnit.CaseTemplate
 
+  alias TemplatePhoenix.Accounts.Scope
+
   using do
     quote do
       # The default endpoint for testing
@@ -44,9 +46,10 @@ defmodule TemplatePhoenixWeb.ConnCase do
   It stores an updated connection and a registered user in the
   test context.
   """
+  @spec register_and_log_in_user(map()) :: map()
   def register_and_log_in_user(%{conn: conn} = context) do
     user = TemplatePhoenix.AccountsFixtures.user_fixture()
-    scope = TemplatePhoenix.Accounts.Scope.for_user(user)
+    scope = Scope.for_user(user)
 
     opts =
       context
@@ -61,6 +64,7 @@ defmodule TemplatePhoenixWeb.ConnCase do
 
   It returns an updated `conn`.
   """
+  @spec log_in_user(Plug.Conn.t(), TemplatePhoenix.Accounts.User.t(), keyword()) :: Plug.Conn.t()
   def log_in_user(conn, user, opts \\ []) do
     token = TemplatePhoenix.Accounts.generate_user_session_token(user)
 
