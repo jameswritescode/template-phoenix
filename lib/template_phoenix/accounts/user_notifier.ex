@@ -1,8 +1,12 @@
 defmodule TemplatePhoenix.Accounts.UserNotifier do
+  @moduledoc """
+  Builds and delivers account emails: magic-link login, confirmation, and email-change instructions.
+  """
+
   import Swoosh.Email
 
-  alias TemplatePhoenix.Mailer
   alias TemplatePhoenix.Accounts.User
+  alias TemplatePhoenix.Mailer
 
   # Delivers the email using the application mailer.
   defp deliver(recipient, subject, body) do
@@ -21,6 +25,8 @@ defmodule TemplatePhoenix.Accounts.UserNotifier do
   @doc """
   Deliver instructions to update a user email.
   """
+  @spec deliver_update_email_instructions(User.t(), String.t()) ::
+          {:ok, Swoosh.Email.t()} | {:error, term()}
   def deliver_update_email_instructions(user, url) do
     deliver(user.email, "Update email instructions", """
 
@@ -41,6 +47,8 @@ defmodule TemplatePhoenix.Accounts.UserNotifier do
   @doc """
   Deliver instructions to log in with a magic link.
   """
+  @spec deliver_login_instructions(User.t(), String.t()) ::
+          {:ok, Swoosh.Email.t()} | {:error, term()}
   def deliver_login_instructions(user, url) do
     case user do
       %User{confirmed_at: nil} -> deliver_confirmation_instructions(user, url)
