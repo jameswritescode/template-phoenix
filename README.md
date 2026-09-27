@@ -39,6 +39,27 @@ A Phoenix 1.8 application template.
    mix phx.server
    ```
 
+5. **Re-apply GitHub repo settings** (optional — repository settings don't
+   copy with the template). The Dependabot auto-merge workflow
+   (`.github/workflows/dependabot-auto-merge.yml`) merges minor/patch
+   updates once CI passes, but it only waits for CI if auto-merge is
+   allowed and the CI checks are required on `main`:
+
+   ```sh
+   gh api -X PATCH "repos/{owner}/{repo}" -F allow_auto_merge=true
+   gh api -X PUT "repos/{owner}/{repo}/branches/main/protection" --input - <<'JSON'
+   {
+     "required_status_checks": {"strict": false, "contexts": ["ci", "rename"]},
+     "enforce_admins": false,
+     "required_pull_request_reviews": null,
+     "restrictions": null
+   }
+   JSON
+   ```
+
+   `enforce_admins: false` keeps direct pushes to `main` working for
+   admins; only pull requests wait on the required checks.
+
 ## Development
 
 To start your Phoenix server:
