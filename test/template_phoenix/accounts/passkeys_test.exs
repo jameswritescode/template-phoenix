@@ -213,4 +213,172 @@ defmodule TemplatePhoenix.Accounts.PasskeysTest do
                        %{count: 1}, %{reason: :user_verification_missing}}
     end
   end
+
+  describe "discoverable assertion" do
+    setup do
+      user = user_fixture()
+      {_challenge, user, _} = Passkeys.new_registration_challenge(Scope.for_user(user))
+      passkey = user_passkey_fixture(user, credential_id: "cred-disco")
+      challenge = Passkeys.new_discoverable_authentication_challenge()
+      %{user: user, passkey: passkey, challenge: challenge}
+    end
+
+    test "verifies, bumps last_used_at, and issues a consumable login token",
+         %{user: user, passkey: passkey, challenge: challenge} do
+      payload = webauthn_assertion_payload(passkey.credential_id, user.webauthn_user_handle)
+
+      assert {:ok, verified_user, login_token} =
+               Passkeys.verify_assertion_and_issue_login_token(challenge, payload)
+
+      assert verified_user.id == user.id
+      assert {:ok, _user, "discoverable"} = Accounts.consume_webauthn_login_token(login_token)
+      assert Repo.get!(UserPasskey, passkey.id).last_used_at
+    end
+
+    test "unknown credential id fails generically", %{challenge: challenge, user: user} do
+      payload = webauthn_assertion_payload("no-such-cred", user.webauthn_user_handle)
+
+      assert {:error, :verification_failed} =
+               Passkeys.verify_assertion_and_issue_login_token(challenge, payload)
+    end
+
+    test "user_handle mismatch is rejected even when Wax would pass",
+         %{passkey: passkey, challenge: challenge} do
+      payload = webauthn_assertion_payload(passkey.credential_id, :crypto.strong_rand_bytes(32))
+
+      assert {:error, :verification_failed} =
+               Passkeys.verify_assertion_and_issue_login_token(challenge, payload)
+    end
+
+    test "missing user_handle is rejected", %{passkey: passkey, challenge: challenge} do
+      payload = webauthn_assertion_payload(passkey.credential_id, nil)
+
+      assert {:error, :invalid_payload} =
+               Passkeys.verify_assertion_and_issue_login_token(challenge, payload)
+    end
+
+    test "malformed base64url in any field fails cleanly", %{challenge: challenge} do
+      payload = %{
+        "credential_id" => "!!!",
+        "authenticator_data" => "!!!",
+        "signature" => "!!!",
+        "client_data_json" => "!!!",
+        "user_handle" => "!!!"
+      }
+
+      assert {:error, :invalid_payload} =
+               Passkeys.verify_assertion_and_issue_login_token(challenge, payload)
+    end
+  end
+
+  describe "second-factor assertion" do
+    setup do
+      user = user_fixture()
+      passkey = user_passkey_fixture(user, credential_id: "cred-2fa")
+      {challenge, allow_ids} = Passkeys.new_authentication_challenge_for_user(user)
+      %{user: user, passkey: passkey, challenge: challenge, allow_ids: allow_ids}
+    end
+
+    test "allow list contains exactly the user's credentials", %{
+      passkey: passkey,
+      allow_ids: allow_ids
+    } do
+      assert allow_ids == [passkey.credential_id]
+    end
+
+    test "verifies and issues a second_factor-tagged token",
+         %{user: user, passkey: passkey, challenge: challenge} do
+      payload = webauthn_assertion_payload(passkey.credential_id)
+
+      assert {:ok, _user, login_token} =
+               Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
+
+      assert {:ok, _user, "second_factor"} = Accounts.consume_webauthn_login_token(login_token)
+    end
+
+    test "another user's valid passkey cannot complete this user's second factor",
+         %{user: user, challenge: challenge} do
+      other = user_fixture()
+      other_passkey = user_passkey_fixture(other, credential_id: "cred-other")
+      payload = webauthn_assertion_payload(other_passkey.credential_id)
+
+      assert {:error, :verification_failed} =
+               Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
+    end
+  end
+
+  describe "sign-count policy" do
+    setup do
+      user = user_fixture()
+      %{user: user}
+    end
+
+    test "0 -> 0 is accepted (counter unsupported)", %{user: user} do
+      passkey = user_passkey_fixture(user, sign_count: 0)
+      {challenge, _} = Passkeys.new_authentication_challenge_for_user(user)
+      payload = webauthn_assertion_payload(passkey.credential_id)
+
+      assert {:ok, _, _} =
+               Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
+    end
+
+    test "increment is accepted and persisted", %{user: user} do
+      passkey = user_passkey_fixture(user, sign_count: 5)
+      {challenge, _} = Passkeys.new_authentication_challenge_for_user(user)
+
+      Mox.expect(TemplatePhoenix.MockWebAuthn, :authenticate, fn cred_id, _, _, _, _, _ ->
+        {:ok, FakeWebAuthn.auth_data(credential_id: cred_id, sign_count: 6)}
+      end)
+
+      payload = webauthn_assertion_payload(passkey.credential_id)
+
+      assert {:ok, _, _} =
+               Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
+
+      assert Repo.get!(UserPasskey, passkey.id).sign_count == 6
+    end
+
+    test "regression is rejected and emits telemetry", %{user: user} do
+      passkey = user_passkey_fixture(user, sign_count: 10)
+      {challenge, _} = Passkeys.new_authentication_challenge_for_user(user)
+
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [
+          [:template_phoenix, :accounts, :passkey, :sign_count_regression]
+        ])
+
+      Mox.expect(TemplatePhoenix.MockWebAuthn, :authenticate, fn cred_id, _, _, _, _, _ ->
+        {:ok, FakeWebAuthn.auth_data(credential_id: cred_id, sign_count: 3)}
+      end)
+
+      payload = webauthn_assertion_payload(passkey.credential_id)
+
+      assert {:error, :verification_failed} =
+               Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
+
+      assert_received {[:template_phoenix, :accounts, :passkey, :sign_count_regression], ^ref, _,
+                       _}
+
+      assert Repo.get!(UserPasskey, passkey.id).sign_count == 10
+    end
+
+    test "optimistic guard: concurrent bump of the row rejects the assertion", %{user: user} do
+      passkey = user_passkey_fixture(user, sign_count: 5)
+      {challenge, _} = Passkeys.new_authentication_challenge_for_user(user)
+
+      Mox.expect(TemplatePhoenix.MockWebAuthn, :authenticate, fn cred_id, _, _, _, _, _ ->
+        Repo.update_all(
+          from(p in UserPasskey, where: p.id == ^passkey.id),
+          set: [sign_count: 7]
+        )
+
+        {:ok, FakeWebAuthn.auth_data(credential_id: cred_id, sign_count: 6)}
+      end)
+
+      payload = webauthn_assertion_payload(passkey.credential_id)
+
+      assert {:error, :verification_failed} =
+               Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
+    end
+  end
 end
