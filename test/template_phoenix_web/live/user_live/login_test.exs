@@ -1,8 +1,22 @@
 defmodule TemplatePhoenixWeb.UserLive.LoginTest do
   use TemplatePhoenixWeb.ConnCase, async: true
 
+  import Ecto.Query
+  import Mox
   import Phoenix.LiveViewTest
   import TemplatePhoenix.AccountsFixtures
+
+  alias TemplatePhoenix.Accounts.Passkeys
+  alias TemplatePhoenix.Accounts.Scope
+  alias TemplatePhoenix.Accounts.UserToken
+  alias TemplatePhoenix.Repo
+
+  setup :verify_on_exit!
+
+  setup do
+    Mox.stub_with(TemplatePhoenix.MockWebAuthn, TemplatePhoenix.Accounts.FakeWebAuthn)
+    :ok
+  end
 
   describe "login page" do
     test "renders login page", %{conn: conn} do
@@ -110,6 +124,79 @@ defmodule TemplatePhoenixWeb.UserLive.LoginTest do
 
       assert html =~
                ~s(<input type="email" name="user[email]" id="login_form_magic_email" value="#{user.email}")
+    end
+  end
+
+  describe "passkey-only sign-in" do
+    setup do
+      user = user_fixture()
+      # ensure a webauthn_user_handle exists (registration challenge persists it)
+      {_challenge, user, _} = Passkeys.new_registration_challenge(Scope.for_user(user))
+
+      %{user: user, passkey: user_passkey_fixture(user, credential_id: "login-cred")}
+    end
+
+    test "button starts a discoverable ceremony and success arms the completion form",
+         %{conn: conn, user: user, passkey: passkey} do
+      {:ok, view, _html} = live(conn, ~p"/users/log-in")
+
+      view |> element("#passkey-login-button") |> render_click()
+      assert_push_event(view, "webauthn:authenticate", %{userVerification: "required"})
+
+      render_hook(
+        view,
+        "webauthn:asserted",
+        webauthn_assertion_payload(passkey.credential_id, user.webauthn_user_handle)
+      )
+
+      assert has_element?(view, "#passkey-complete-form input[name='user[token]'][value]")
+    end
+
+    test "assertion without user_handle shows the fallback hint", %{conn: conn, passkey: passkey} do
+      {:ok, view, _html} = live(conn, ~p"/users/log-in")
+      view |> element("#passkey-login-button") |> render_click()
+
+      render_hook(
+        view,
+        "webauthn:asserted",
+        webauthn_assertion_payload(passkey.credential_id, nil)
+      )
+
+      assert render(view) =~ "use email and password, then your passkey"
+    end
+
+    test "unsupported browsers hide the button", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/users/log-in")
+      render_hook(view, "webauthn:unsupported", %{})
+      refute has_element?(view, "#passkey-login-button")
+    end
+
+    test "double-submitting the same assertion payload issues no second token",
+         %{conn: conn, user: user, passkey: passkey} do
+      {:ok, view, _html} = live(conn, ~p"/users/log-in")
+
+      view |> element("#passkey-login-button") |> render_click()
+      assert_push_event(view, "webauthn:authenticate", %{userVerification: "required"})
+
+      payload = webauthn_assertion_payload(passkey.credential_id, user.webauthn_user_handle)
+
+      render_hook(view, "webauthn:asserted", payload)
+      assert has_element?(view, "#passkey-complete-form input[name='user[token]'][value]")
+
+      token_count = fn ->
+        Repo.aggregate(
+          from(t in UserToken, where: t.user_id == ^user.id and t.context == "webauthn-login"),
+          :count
+        )
+      end
+
+      assert token_count.() == 1
+
+      render_hook(view, "webauthn:asserted", payload)
+
+      # HEEx HTML-escapes the flash text, so the apostrophe renders as `&#39;`.
+      assert render(view) =~ "We couldn&#39;t verify that passkey"
+      assert token_count.() == 1
     end
   end
 end

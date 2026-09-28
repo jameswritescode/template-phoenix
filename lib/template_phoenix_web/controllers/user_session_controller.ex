@@ -47,6 +47,33 @@ defmodule TemplatePhoenixWeb.UserSessionController do
     end
   end
 
+  @spec create_passkey(Plug.Conn.t(), map()) :: Plug.Conn.t()
+  def create_passkey(conn, %{"user" => %{"token" => token} = user_params}) do
+    case Accounts.consume_webauthn_login_token(token) do
+      {:ok, user, method} ->
+        :telemetry.execute(
+          [:template_phoenix, :accounts, :login],
+          %{count: 1},
+          %{result: :success, method: "passkey_#{method}"}
+        )
+
+        params =
+          case get_session(conn, :passkey_2fa_remember_me) do
+            nil -> Map.take(user_params, ["remember_me"])
+            value -> %{"remember_me" => to_string(value)}
+          end
+
+        conn
+        |> put_flash(:info, "Welcome back!")
+        |> UserAuth.log_in_user_after_webauthn(user, params)
+
+      :error ->
+        conn
+        |> put_flash(:error, "We couldn't complete passkey sign-in. Please try again.")
+        |> redirect(to: ~p"/users/log-in")
+    end
+  end
+
   @spec update_password(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def update_password(conn, %{"user" => user_params} = params) do
     user = conn.assigns.current_scope.user
