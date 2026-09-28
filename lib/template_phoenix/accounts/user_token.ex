@@ -13,6 +13,8 @@ defmodule TemplatePhoenix.Accounts.UserToken do
   @magic_link_validity_in_minutes 15
   @change_email_validity_in_days 7
   @session_validity_in_days 14
+  @passkey_pending_validity_in_minutes 10
+  @webauthn_login_validity_in_minutes 2
 
   schema "users_tokens" do
     field :token, :binary
@@ -160,4 +162,45 @@ defmodule TemplatePhoenix.Accounts.UserToken do
   defp by_token_and_context_query(token, context) do
     from UserToken, where: [token: ^token, context: ^context]
   end
+
+  @doc """
+  Builds a hashed, single-purpose passkey-flow token. `context` is
+  "passkey-2fa" (pending second factor) or "webauthn-login" (assertion
+  completion); `tag` is stored in `sent_to` and records how the token was
+  issued ("second_factor" | "discoverable").
+  """
+  @spec build_passkey_token(TemplatePhoenix.Accounts.User.t(), String.t(), String.t() | nil) ::
+          {String.t(), t()}
+  def build_passkey_token(user, context, tag) when context in ["passkey-2fa", "webauthn-login"] do
+    token = :crypto.strong_rand_bytes(@rand_size)
+    hashed_token = :crypto.hash(@hash_algorithm, token)
+
+    {Base.url_encode64(token, padding: false),
+     %UserToken{token: hashed_token, context: context, sent_to: tag, user_id: user.id}}
+  end
+
+  @doc "Query for a still-valid passkey-flow token joined to its user."
+  @spec verify_passkey_token_query(String.t(), String.t()) :: {:ok, Ecto.Query.t()} | :error
+  def verify_passkey_token_query(encoded, context) do
+    case Base.url_decode64(encoded, padding: false) do
+      {:ok, decoded} ->
+        hashed = :crypto.hash(@hash_algorithm, decoded)
+        minutes = passkey_token_validity(context)
+
+        query =
+          from token in by_token_and_context_query(hashed, context),
+            join: user in assoc(token, :user),
+            where: token.inserted_at > ago(^minutes, "minute"),
+            select: {user, token}
+
+        {:ok, query}
+
+      :error ->
+        :error
+    end
+  end
+
+  @spec passkey_token_validity(String.t()) :: pos_integer()
+  defp passkey_token_validity("passkey-2fa"), do: @passkey_pending_validity_in_minutes
+  defp passkey_token_validity("webauthn-login"), do: @webauthn_login_validity_in_minutes
 end

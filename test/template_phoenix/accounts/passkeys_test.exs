@@ -1,6 +1,7 @@
 defmodule TemplatePhoenix.Accounts.PasskeysTest do
   use TemplatePhoenix.DataCase, async: true
 
+  alias TemplatePhoenix.Accounts
   alias TemplatePhoenix.Accounts.UserPasskey
   alias TemplatePhoenix.Accounts.WebAuthn
   alias TemplatePhoenixWeb.Endpoint
@@ -55,6 +56,57 @@ defmodule TemplatePhoenix.Accounts.PasskeysTest do
       assert opts[:origin] == Endpoint.url()
       assert opts[:rp_id] == Endpoint.host()
       assert opts[:user_verification] == "required"
+    end
+  end
+
+  describe "pending second factor tokens" do
+    test "round-trips within TTL and is replaced on re-issue" do
+      user = user_fixture()
+      encoded = Accounts.generate_pending_second_factor_token(user)
+      assert Accounts.get_user_by_pending_second_factor_token(encoded).id == user.id
+
+      encoded2 = Accounts.generate_pending_second_factor_token(user)
+      assert Accounts.get_user_by_pending_second_factor_token(encoded) == nil
+      assert Accounts.get_user_by_pending_second_factor_token(encoded2).id == user.id
+    end
+
+    test "expires after 10 minutes" do
+      user = user_fixture()
+      encoded = Accounts.generate_pending_second_factor_token(user)
+      backdate_tokens(user, "passkey-2fa", minutes: -11)
+      assert Accounts.get_user_by_pending_second_factor_token(encoded) == nil
+    end
+
+    test "reads are non-consuming; delete removes it" do
+      user = user_fixture()
+      encoded = Accounts.generate_pending_second_factor_token(user)
+      assert Accounts.get_user_by_pending_second_factor_token(encoded)
+      assert Accounts.get_user_by_pending_second_factor_token(encoded)
+      assert :ok = Accounts.delete_pending_second_factor_token(encoded)
+      assert Accounts.get_user_by_pending_second_factor_token(encoded) == nil
+    end
+
+    test "garbage input returns nil, never raises" do
+      assert Accounts.get_user_by_pending_second_factor_token("!!! not base64 !!!") == nil
+      assert :ok = Accounts.delete_pending_second_factor_token("!!! not base64 !!!")
+    end
+  end
+
+  describe "webauthn login tokens" do
+    test "consume is single-use and returns the issuance tag" do
+      user = user_fixture()
+      encoded = issue_webauthn_login_token(user, "discoverable")
+      assert {:ok, consumed_user, "discoverable"} = Accounts.consume_webauthn_login_token(encoded)
+      assert consumed_user.id == user.id
+      assert Accounts.consume_webauthn_login_token(encoded) == :error
+    end
+
+    test "expires after 2 minutes and rejects garbage" do
+      user = user_fixture()
+      encoded = issue_webauthn_login_token(user, "second_factor")
+      backdate_tokens(user, "webauthn-login", minutes: -3)
+      assert Accounts.consume_webauthn_login_token(encoded) == :error
+      assert Accounts.consume_webauthn_login_token("garbage") == :error
     end
   end
 end
