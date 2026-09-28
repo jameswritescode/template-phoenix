@@ -80,6 +80,7 @@ defmodule TemplatePhoenixWeb.UserAuth do
     user_return_to = get_session(conn, :user_return_to)
 
     conn
+    |> clear_flash()
     |> renew_session_for_pending()
     |> put_session(:passkey_2fa_token, Accounts.generate_pending_second_factor_token(user))
     |> put_session(:passkey_2fa_remember_me, params["remember_me"] == "true")
@@ -115,7 +116,20 @@ defmodule TemplatePhoenixWeb.UserAuth do
     |> do_log_in_user(user, params)
   end
 
+  # The single emission point for a successful login, regardless of which
+  # factor(s) minted it. Callers tag the outcome via the internal
+  # `_login_method` param key ("password", "magic_link",
+  # "passkey_second_factor", "passkey_discoverable"); the key is stripped
+  # here, before params flow into session/remember-me handling.
   defp do_log_in_user(conn, user, params) do
+    {method, params} = Map.pop(params, "_login_method", "unknown")
+
+    :telemetry.execute(
+      [:template_phoenix, :accounts, :login],
+      %{count: 1},
+      %{result: :success, method: method}
+    )
+
     user_return_to = get_session(conn, :user_return_to)
 
     conn

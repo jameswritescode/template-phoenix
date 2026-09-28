@@ -35,8 +35,12 @@ defmodule TemplatePhoenix.Accounts.Passkeys do
   Suggested alerts (Health-module style):
   - Page on ANY `sign_count_regression` — it indicates a cloned credential
     or a replayed assertion.
-  - Chart login volume by `method` (see the session controller events) and
-    passkey registrations/deletions per day.
+  - Chart login volume by `result` and `method` (the single
+    `[:template_phoenix, :accounts, :login]` event — emitted from
+    `UserAuth.do_log_in_user/3` on success, `UserSessionController` on
+    failure, `UserAuth`'s second-factor gate for `:second_factor_required`,
+    and `UserLive.TwoFactor`'s attempt limiter for `:two_factor_abandoned`)
+    and passkey registrations/deletions per day.
   - Alert when `verification_failed` spikes relative to `asserted`.
   """
 

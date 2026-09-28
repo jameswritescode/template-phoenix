@@ -97,4 +97,10 @@ defmodule TemplatePhoenixWeb.UserLive.PasskeysTest do
     render_hook(view, "webauthn:error", %{"name" => "InvalidStateError", "message" => ""})
     assert render(view) =~ "already registered"
   end
+
+  test "webauthn:error without a name is answered generically", %{conn: conn} do
+    {:ok, view, _html} = live(conn, ~p"/users/settings/passkeys")
+    render_hook(view, "webauthn:error", %{"unexpected" => 1})
+    assert render(view) =~ "Something went wrong"
+  end
 end
