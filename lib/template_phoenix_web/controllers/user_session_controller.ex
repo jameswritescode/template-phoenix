@@ -64,10 +64,8 @@ defmodule TemplatePhoenixWeb.UserSessionController do
     case Accounts.consume_webauthn_login_token(token) do
       {:ok, user, method} ->
         params =
-          case get_session(conn, :passkey_2fa_remember_me) do
-            nil -> Map.take(user_params, ["remember_me"])
-            value -> %{"remember_me" => to_string(value)}
-          end
+          method
+          |> remember_me_params(get_session(conn, :passkey_2fa_remember_me), user_params)
           |> Map.put("_login_method", "passkey_#{method}")
 
         conn
@@ -75,11 +73,27 @@ defmodule TemplatePhoenixWeb.UserSessionController do
         |> UserAuth.log_in_user_after_webauthn(user, params)
 
       :error ->
+        :telemetry.execute(
+          [:template_phoenix, :accounts, :login],
+          %{count: 1},
+          %{result: :failure, method: "passkey"}
+        )
+
         conn
         |> put_flash(:error, "We couldn't complete passkey sign-in. Please try again.")
         |> redirect(to: ~p"/users/log-in")
     end
   end
+
+  # The gate's captured choice belongs to the second-factor flow only; a
+  # discoverable login must not inherit a value left behind by an abandoned
+  # 2FA attempt in the same browser session.
+  defp remember_me_params("second_factor", remember_me, _user_params)
+       when is_boolean(remember_me),
+       do: %{"remember_me" => to_string(remember_me)}
+
+  defp remember_me_params(_method, _session_value, user_params),
+    do: Map.take(user_params, ["remember_me"])
 
   @spec update_password(Plug.Conn.t(), map()) :: Plug.Conn.t()
   def update_password(conn, %{"user" => user_params} = params) do

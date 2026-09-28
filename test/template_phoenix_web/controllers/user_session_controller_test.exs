@@ -173,6 +173,21 @@ defmodule TemplatePhoenixWeb.UserSessionControllerTest do
       end
     end
 
+    test "a discoverable login ignores a leftover gate remember_me and uses the posted value",
+         %{user: user} do
+      token = issue_webauthn_login_token(user, "discoverable")
+
+      conn =
+        build_conn()
+        |> init_test_session(passkey_2fa_remember_me: true)
+        |> post(~p"/users/log-in/passkey", %{
+          "user" => %{"token" => token, "remember_me" => "false"}
+        })
+
+      assert get_session(conn, :user_token)
+      refute conn.resp_cookies["_template_phoenix_web_user_remember_me"]
+    end
+
     test "session is renewed at completion (fixation defense)", %{user: user} do
       token = issue_webauthn_login_token(user, "discoverable")
 
@@ -364,21 +379,49 @@ defmodule TemplatePhoenixWeb.UserSessionControllerTest do
       refute get_session(remint, :passkey_2fa_token)
     end
 
-    test "carve-out: still applies at ~15 minutes old (inside sudo_mode?/1's 20-minute default, " <>
-           "outside the on_mount(:require_sudo_mode) gate's 10-minute window)",
+    test "carve-out: a fresh re-mint keeps the original ceremony time (never extends sudo)",
          %{user: user} do
-      conn =
-        log_in_user(build_conn(), user,
-          token_authenticated_at: inside_carve_out_outside_gate_at()
-        )
+      ceremony_at = DateTime.add(DateTime.utc_now(:second), -5, :minute)
+      conn = log_in_user(build_conn(), user, token_authenticated_at: ceremony_at)
 
       remint =
-        conn
-        |> UserAuth.fetch_current_scope_for_user([])
-        |> UserAuth.log_in_user(user)
+        post(conn, ~p"/users/log-in", %{
+          "user" => %{"email" => user.email, "password" => valid_user_password()}
+        })
 
-      assert get_session(remint, :user_token)
       refute get_session(remint, :passkey_2fa_token)
+
+      {reminted, _token_inserted_at} =
+        Accounts.get_user_by_session_token(get_session(remint, :user_token))
+
+      assert reminted.authenticated_at == ceremony_at
+    end
+
+    test "carve-out: does NOT apply at ~15 minutes old (outside the sudo gate's 10-minute window)",
+         %{user: user} do
+      conn = log_in_user(build_conn(), user, token_authenticated_at: outside_gate_at())
+
+      reauth =
+        post(conn, ~p"/users/log-in", %{
+          "user" => %{"email" => user.email, "password" => valid_user_password()}
+        })
+
+      assert redirected_to(reauth) == ~p"/users/log-in/two-factor"
+      refute get_session(reauth, :user_token)
+      assert get_session(reauth, :passkey_2fa_token)
+    end
+
+    test "password re-auth at ~15 minutes does not satisfy require_sudo_mode afterward",
+         %{user: user} do
+      conn = log_in_user(build_conn(), user, token_authenticated_at: outside_gate_at())
+
+      reauth =
+        post(conn, ~p"/users/log-in", %{
+          "user" => %{"email" => user.email, "password" => valid_user_password()}
+        })
+
+      settings = get(recycle(reauth), ~p"/users/settings")
+      assert redirected_to(settings) == ~p"/users/log-in"
     end
 
     test "carve-out does NOT apply to a different user", %{user: user} do
@@ -400,11 +443,10 @@ defmodule TemplatePhoenixWeb.UserSessionControllerTest do
   # and sudo_mode?/1's 20-minute default — unambiguously stale either way.
   defp stale_authenticated_at, do: DateTime.add(DateTime.utc_now(:second), -2, :hour)
 
-  # Pins the carve-out's actual window: inside sudo_mode?/1's 20-minute
-  # default (so the carve-out still applies) but outside the generated
-  # on_mount(:require_sudo_mode)'s 10-minute window (so this cannot be
-  # mistaken for merely "fresh").
-  defp inside_carve_out_outside_gate_at, do: DateTime.add(DateTime.utc_now(:second), -15, :minute)
+  # Inside sudo_mode?/1's 20-minute default but outside the
+  # on_mount(:require_sudo_mode) gate's 10-minute window — the band where a
+  # looser carve-out would refresh sudo without a ceremony.
+  defp outside_gate_at, do: DateTime.add(DateTime.utc_now(:second), -15, :minute)
 
   defp pending_2fa_token_count(user) do
     TemplatePhoenix.Repo.aggregate(
@@ -505,6 +547,16 @@ defmodule TemplatePhoenixWeb.UserSessionControllerTest do
 
       assert_received {[:template_phoenix, :accounts, :login], ^ref, %{count: 1},
                        %{result: :failure, method: "password"}}
+    end
+
+    test "a failed passkey completion emits a failure event", %{conn: conn} do
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [[:template_phoenix, :accounts, :login]])
+
+      post(conn, ~p"/users/log-in/passkey", %{"user" => %{"token" => "garbage"}})
+
+      assert_received {[:template_phoenix, :accounts, :login], ^ref, %{count: 1},
+                       %{result: :failure, method: "passkey"}}
     end
 
     test "an invalid magic link emits a failure event", %{conn: conn} do

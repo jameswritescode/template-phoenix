@@ -5,7 +5,12 @@ defmodule TemplatePhoenixWeb.UserLive.Passkeys do
   """
   use TemplatePhoenixWeb, :live_view
 
+  require Logger
+
+  alias TemplatePhoenix.Accounts
   alias TemplatePhoenix.Accounts.Passkeys
+
+  @sudo_events ["add", "webauthn:registered", "rename", "delete"]
 
   on_mount {TemplatePhoenixWeb.UserAuth, :require_sudo_mode}
 
@@ -99,58 +104,30 @@ defmodule TemplatePhoenixWeb.UserLive.Passkeys do
   end
 
   @impl true
-  def mount(_params, _session, socket) do
+  def mount(_params, session, socket) do
     {:ok,
      socket
+     |> assign(:user_token, session["user_token"])
      |> assign(:webauthn_supported, true)
      |> assign(:registration_challenge, nil)
      |> assign(:passkeys, Passkeys.list_passkeys(socket.assigns.current_scope))}
   end
 
   @impl true
-  def handle_event("add", _params, socket) do
-    {challenge, user, exclude_ids} =
-      Passkeys.new_registration_challenge(socket.assigns.current_scope)
+  def handle_event(event, params, socket) when event in @sudo_events do
+    if sudo_fresh?(socket) do
+      handle_sudo_event(event, params, socket)
+    else
+      Logger.info(
+        "passkey management blocked: sudo expired " <>
+          "user_id=#{socket.assigns.current_scope.user.id} event=#{event}"
+      )
 
-    {:noreply,
-     socket
-     |> assign(:registration_challenge, challenge)
-     |> push_event(
-       "webauthn:register",
-       Passkeys.client_registration_options(challenge, user, exclude_ids)
-     )}
-  end
-
-  def handle_event("webauthn:registered", payload, socket) do
-    case socket.assigns.registration_challenge do
-      nil -> {:noreply, put_flash(socket, :error, "No registration in progress — try again.")}
-      challenge -> finish_registration(socket, challenge, payload)
+      {:noreply,
+       socket
+       |> put_flash(:error, "You must re-authenticate to manage passkeys.")
+       |> redirect(to: ~p"/users/log-in")}
     end
-  end
-
-  def handle_event("rename", %{"passkey_id" => id, "passkey" => %{"name" => name}}, socket) do
-    case Passkeys.rename_passkey(socket.assigns.current_scope, id, name) do
-      {:ok, _passkey} ->
-        {:noreply,
-         assign(socket, :passkeys, Passkeys.list_passkeys(socket.assigns.current_scope))}
-
-      {:error, _changeset} ->
-        {:noreply, put_flash(socket, :error, "Names must be 1–80 characters.")}
-    end
-  end
-
-  def handle_event("delete", %{"id" => id}, socket) do
-    {:ok, _deleted, remaining} = Passkeys.delete_passkey(socket.assigns.current_scope, id)
-
-    flash =
-      if remaining == 0,
-        do: "Passkey deleted — passkey sign-in and two-factor is now off for this account.",
-        else: "Passkey deleted."
-
-    {:noreply,
-     socket
-     |> assign(:passkeys, Passkeys.list_passkeys(socket.assigns.current_scope))
-     |> put_flash(:info, flash)}
   end
 
   def handle_event("webauthn:unsupported", _params, socket) do
@@ -171,6 +148,68 @@ defmodule TemplatePhoenixWeb.UserLive.Passkeys do
   def handle_event("webauthn:error", _params, socket) do
     {:noreply,
      put_flash(socket, :error, "Something went wrong with the passkey prompt. Try again.")}
+  end
+
+  # The on_mount gate only checks sudo once; a tab left open (or anything
+  # riding its socket) must not add or strip a second factor hours later.
+  # Re-reads the session token so a stamp that aged — or a token revoked —
+  # since mount is seen. 20-minute grace mirrors the Settings LiveView.
+  defp sudo_fresh?(%{assigns: %{user_token: token, current_scope: scope}})
+       when is_binary(token) do
+    case Accounts.get_user_by_session_token(token) do
+      {%Accounts.User{id: id} = user, _inserted_at} when id == scope.user.id ->
+        Accounts.sudo_mode?(user)
+
+      _other ->
+        false
+    end
+  end
+
+  defp sudo_fresh?(_socket), do: false
+
+  defp handle_sudo_event("add", _params, socket) do
+    {challenge, user, exclude_ids} =
+      Passkeys.new_registration_challenge(socket.assigns.current_scope)
+
+    {:noreply,
+     socket
+     |> assign(:registration_challenge, challenge)
+     |> push_event(
+       "webauthn:register",
+       Passkeys.client_registration_options(challenge, user, exclude_ids)
+     )}
+  end
+
+  defp handle_sudo_event("webauthn:registered", payload, socket) do
+    case socket.assigns.registration_challenge do
+      nil -> {:noreply, put_flash(socket, :error, "No registration in progress — try again.")}
+      challenge -> finish_registration(socket, challenge, payload)
+    end
+  end
+
+  defp handle_sudo_event("rename", %{"passkey_id" => id, "passkey" => %{"name" => name}}, socket) do
+    case Passkeys.rename_passkey(socket.assigns.current_scope, id, name) do
+      {:ok, _passkey} ->
+        {:noreply,
+         assign(socket, :passkeys, Passkeys.list_passkeys(socket.assigns.current_scope))}
+
+      {:error, _changeset} ->
+        {:noreply, put_flash(socket, :error, "Names must be 1–80 characters.")}
+    end
+  end
+
+  defp handle_sudo_event("delete", %{"id" => id}, socket) do
+    {:ok, _deleted, remaining} = Passkeys.delete_passkey(socket.assigns.current_scope, id)
+
+    flash =
+      if remaining == 0,
+        do: "Passkey deleted — passkey sign-in and two-factor is now off for this account.",
+        else: "Passkey deleted."
+
+    {:noreply,
+     socket
+     |> assign(:passkeys, Passkeys.list_passkeys(socket.assigns.current_scope))
+     |> put_flash(:info, flash)}
   end
 
   defp finish_registration(socket, challenge, payload) do
