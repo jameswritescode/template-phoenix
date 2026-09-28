@@ -42,8 +42,9 @@ defmodule TemplatePhoenix.AuthMarkersTest do
       @roots
       |> Enum.flat_map(&Path.wildcard("#{&1}/**/*", match_dot: true))
       |> Enum.filter(&File.regular?/1)
-      |> Enum.reject(&(Path.extname(&1) in ~w(.beam .gz .png .ico .svg)))
-      |> Enum.reject(&(Path.absname(&1) == this_file))
+      |> Enum.reject(
+        &(Path.extname(&1) in ~w(.beam .gz .png .ico .svg) or Path.absname(&1) == this_file)
+      )
 
     files ++ Enum.filter(@single_files, &File.regular?/1)
   end
