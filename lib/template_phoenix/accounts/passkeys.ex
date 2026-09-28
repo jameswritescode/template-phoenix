@@ -9,13 +9,28 @@ defmodule TemplatePhoenix.Accounts.Passkeys do
   authenticated session for a passkey-holding account traces back to one
   of those two verified assertions.
 
+  ## Challenge single-use contract
+
+  Callers of `verify_assertion_and_issue_login_token/2` and
+  `verify_second_factor_and_issue_login_token/3` MUST discard their stored
+  `%Wax.Challenge{}` after calling either function, regardless of outcome.
+  This module cannot make a challenge value single-use on its own: a synced
+  passkey (sign count `0`) will accept a replayed assertion against the
+  same challenge for as long as that challenge remains within its ~120s
+  lifetime. Single-use is therefore a contract the caller upholds (e.g. by
+  deleting the challenge from its session/cache before invoking
+  verification), not a guarantee this core provides.
+
   ## Observability
 
   Telemetry (all under `[:template_phoenix, :accounts, ...]`):
   `[:passkey, :registered | :renamed | :deleted]`,
   `[:passkey, :asserted]` (metadata: `:context`),
   `[:passkey, :verification_failed]`,
-  `[:passkey, :sign_count_regression]`.
+  `[:passkey, :sign_count_regression]` (metadata includes `:kind`,
+  `:not_increasing` for a received count that was never greater than the
+  count read at the start of the assertion, `:lost_race` when it was greater
+  at read time but a concurrent bump won the update at commit time).
 
   Suggested alerts (Health-module style):
   - Page on ANY `sign_count_regression` — it indicates a cloned credential
@@ -61,7 +76,8 @@ defmodule TemplatePhoenix.Accounts.Passkeys do
   @spec register_passkey(Scope.t(), Wax.Challenge.t(), map(), String.t()) ::
           {:ok, UserPasskey.t()}
           | {:error, :already_registered | :invalid_payload | :verification_failed}
-  def register_passkey(%Scope{user: user}, %Wax.Challenge{} = challenge, payload, name) do
+  def register_passkey(%Scope{user: user}, %Wax.Challenge{} = challenge, payload, name)
+      when is_map(payload) do
     with {:ok, attestation_object} <- decode_field(payload, "attestation_object"),
          {:ok, client_data_json} <- decode_field(payload, "client_data_json"),
          {:ok, {auth_data, _attestation}} <-
@@ -72,6 +88,9 @@ defmodule TemplatePhoenix.Accounts.Passkeys do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  def register_passkey(%Scope{}, %Wax.Challenge{}, _payload, _name),
+    do: {:error, :invalid_payload}
 
   @spec client_registration_options(Wax.Challenge.t(), User.t(), [binary()]) :: map()
   def client_registration_options(%Wax.Challenge{} = challenge, %User{} = user, exclude_ids) do
@@ -216,9 +235,22 @@ defmodule TemplatePhoenix.Accounts.Passkeys do
     WebAuthn.impl().new_authentication_challenge(WebAuthn.ceremony_opts())
   end
 
+  @doc """
+  Verifies a discoverable-credential assertion and issues a one-time
+  webauthn-login token for the resolved user.
+
+  The caller MUST discard its stored `%Wax.Challenge{}` after calling this
+  function, on every outcome (success or error) — never reuse it for a
+  second verification attempt. This function has no way to make the
+  challenge value itself single-use; a synced passkey reporting sign count
+  0 will accept a replayed assertion against the same challenge for as long
+  as that challenge remains within its ~120s lifetime, so single-use is a
+  contract the caller must uphold, not something this core enforces.
+  """
   @spec verify_assertion_and_issue_login_token(Wax.Challenge.t(), map()) ::
           {:ok, User.t(), String.t()} | {:error, :invalid_payload | :verification_failed}
-  def verify_assertion_and_issue_login_token(%Wax.Challenge{} = challenge, payload) do
+  def verify_assertion_and_issue_login_token(%Wax.Challenge{} = challenge, payload)
+      when is_map(payload) do
     with {:ok, credential_id} <- decode_field(payload, "credential_id"),
          {:ok, user_handle} <- decode_field(payload, "user_handle"),
          {:ok, passkey, user} <- fetch_passkey_globally(credential_id),
@@ -232,13 +264,29 @@ defmodule TemplatePhoenix.Accounts.Passkeys do
     end
   end
 
+  def verify_assertion_and_issue_login_token(%Wax.Challenge{}, _payload),
+    do: {:error, :invalid_payload}
+
+  @doc """
+  Verifies a second-factor assertion for a known `user` and issues a
+  one-time webauthn-login token.
+
+  The caller MUST discard its stored `%Wax.Challenge{}` after calling this
+  function, on every outcome (success or error) — never reuse it for a
+  second verification attempt. This function has no way to make the
+  challenge value itself single-use; a synced passkey reporting sign count
+  0 will accept a replayed assertion against the same challenge for as long
+  as that challenge remains within its ~120s lifetime, so single-use is a
+  contract the caller must uphold, not something this core enforces.
+  """
   @spec verify_second_factor_and_issue_login_token(User.t(), Wax.Challenge.t(), map()) ::
           {:ok, User.t(), String.t()} | {:error, :invalid_payload | :verification_failed}
   def verify_second_factor_and_issue_login_token(
         %User{} = user,
         %Wax.Challenge{} = challenge,
         payload
-      ) do
+      )
+      when is_map(payload) do
     with {:ok, credential_id} <- decode_field(payload, "credential_id"),
          {:ok, passkey} <- fetch_passkey_for_user(user, credential_id),
          {:ok, auth_data} <- run_assertion(passkey, challenge, payload),
@@ -249,6 +297,9 @@ defmodule TemplatePhoenix.Accounts.Passkeys do
       {:error, reason} -> {:error, reason}
     end
   end
+
+  def verify_second_factor_and_issue_login_token(%User{}, %Wax.Challenge{}, _payload),
+    do: {:error, :invalid_payload}
 
   @spec client_authentication_options(Wax.Challenge.t(), [binary()]) :: map()
   def client_authentication_options(%Wax.Challenge{} = challenge, allow_credential_ids) do
@@ -313,31 +364,38 @@ defmodule TemplatePhoenix.Accounts.Passkeys do
 
   defp check_and_bump_sign_count(%UserPasskey{sign_count: 0}, 0), do: :ok
 
+  # The read-time `stored` value is only used to decide whether to attempt
+  # the bump at all. The update itself is re-checked against whatever is in
+  # the row at commit time (`p.sign_count < ^received`), so a concurrent
+  # writer that already advanced the counter past `received` correctly loses
+  # the race, while one that left it below `received` correctly loses to us
+  # instead of falsely rejecting on `sign_count == stored` no longer matching.
   defp check_and_bump_sign_count(%UserPasskey{sign_count: stored} = passkey, received)
        when received > stored do
     {updated, _} =
       Repo.update_all(
-        from(p in UserPasskey, where: p.id == ^passkey.id and p.sign_count == ^stored),
+        from(p in UserPasskey, where: p.id == ^passkey.id and p.sign_count < ^received),
         set: [sign_count: received]
       )
 
-    if updated == 1, do: :ok, else: sign_count_regression(passkey, received)
+    if updated == 1, do: :ok, else: sign_count_regression(passkey, received, :lost_race)
   end
 
   defp check_and_bump_sign_count(%UserPasskey{} = passkey, received),
-    do: sign_count_regression(passkey, received)
+    do: sign_count_regression(passkey, received, :not_increasing)
 
-  defp sign_count_regression(passkey, received) do
+  defp sign_count_regression(passkey, received, kind) do
     emit([:passkey, :sign_count_regression], %{
       user_id: passkey.user_id,
       passkey_id: passkey.id,
       stored: passkey.sign_count,
-      received: received
+      received: received,
+      kind: kind
     })
 
     Logger.warning(
       "passkey sign count regression user_id=#{passkey.user_id} passkey_id=#{passkey.id} " <>
-        "stored=#{passkey.sign_count} received=#{received}"
+        "stored=#{passkey.sign_count} received=#{received} kind=#{kind}"
     )
 
     {:error, :verification_failed}

@@ -20,7 +20,11 @@ defmodule TemplatePhoenix.Accounts.UserPasskey.COSEKey do
   def dump(%{} = cose_key), do: {:ok, :erlang.term_to_binary(cose_key)}
   def dump(_other), do: :error
 
+  # `:safe` is defense in depth, not a behavior change: every atom a COSE key
+  # CBOR blob can produce already exists (created by `dump/1` from `Wax`
+  # output), so this only guards against a future/foreign binary that isn't
+  # actually a `dump/1` output.
   @impl true
-  def load(binary) when is_binary(binary), do: {:ok, :erlang.binary_to_term(binary)}
+  def load(binary) when is_binary(binary), do: {:ok, :erlang.binary_to_term(binary, [:safe])}
   def load(_other), do: :error
 end

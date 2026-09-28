@@ -179,6 +179,15 @@ defmodule TemplatePhoenix.Accounts.UserToken do
      %UserToken{token: hashed_token, context: context, sent_to: tag, user_id: user.id}}
   end
 
+  @doc """
+  Builds a pending second-factor token (`"passkey-2fa"` context, no tag) for
+  `user`. A thin wrapper over `build_passkey_token/3` so that the completion
+  ("webauthn-login") mint stays confined to `Passkeys` and this module —
+  `Accounts` never calls `build_passkey_token/3` directly.
+  """
+  @spec build_pending_second_factor_token(TemplatePhoenix.Accounts.User.t()) :: {String.t(), t()}
+  def build_pending_second_factor_token(user), do: build_passkey_token(user, "passkey-2fa", nil)
+
   @doc "Query for a still-valid passkey-flow token joined to its user."
   @spec verify_passkey_token_query(String.t(), String.t()) :: {:ok, Ecto.Query.t()} | :error
   def verify_passkey_token_query(encoded, context) do
@@ -202,5 +211,32 @@ defmodule TemplatePhoenix.Accounts.UserToken do
 
   @spec passkey_token_validity(String.t()) :: pos_integer()
   defp passkey_token_validity("passkey-2fa"), do: @passkey_pending_validity_in_minutes
-  defp passkey_token_validity("webauthn-login"), do: @webauthn_login_validity_in_minutes
+
+  @doc """
+  Query to atomically delete-and-return a still-valid webauthn-login token
+  (single-use: matched rows are gone once `Repo.delete_all/1` runs this
+  query). The 2-minute TTL (`@webauthn_login_validity_in_minutes`) lives
+  here — the only place it's defined — so `Accounts.consume_webauthn_login_token/1`
+  never needs its own copy of the expiry window.
+
+  Returns the query's `{:ok, query}`, selecting `%{user_id:, sent_to:}` per
+  matched row, or `:error` if `encoded` isn't valid base64url.
+  """
+  @spec consume_passkey_token_query(String.t()) :: {:ok, Ecto.Query.t()} | :error
+  def consume_passkey_token_query(encoded) do
+    case Base.url_decode64(encoded, padding: false) do
+      {:ok, decoded} ->
+        hashed = :crypto.hash(@hash_algorithm, decoded)
+
+        query =
+          from token in by_token_and_context_query(hashed, "webauthn-login"),
+            where: token.inserted_at > ago(^@webauthn_login_validity_in_minutes, "minute"),
+            select: %{user_id: token.user_id, sent_to: token.sent_to}
+
+        {:ok, query}
+
+      :error ->
+        :error
+    end
+  end
 end
