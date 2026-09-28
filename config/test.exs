@@ -1,7 +1,9 @@
 import Config
 
+# auth:begin — removed by bin/remove-auth.sh
 # Only in tests, remove the complexity from the password hashing algorithm
 config :argon2_elixir, t_cost: 1, m_cost: 8
+# auth:end
 
 # MIX_TEST_PARTITION suffixes the test database name, same normalized form as
 # DB_PARTITION in dev.exs: bare names, underscore added automatically.

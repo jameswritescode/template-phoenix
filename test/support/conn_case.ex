@@ -38,6 +38,7 @@ defmodule TemplatePhoenixWeb.ConnCase do
     {:ok, conn: Phoenix.ConnTest.build_conn()}
   end
 
+  # auth:begin — removed by bin/remove-auth.sh
   @doc """
   Setup helper that registers and logs in users.
 
@@ -80,4 +81,6 @@ defmodule TemplatePhoenixWeb.ConnCase do
   defp maybe_set_token_authenticated_at(token, authenticated_at) do
     TemplatePhoenix.AccountsFixtures.override_token_authenticated_at(token, authenticated_at)
   end
+
+  # auth:end
 end

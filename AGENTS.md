@@ -73,6 +73,7 @@ custom classes must fully style the input
 - Bias toward **using existing reusable components** (see `core_components.ex`) instead of writing one-off markup
 - When new UI is needed, bias toward **building it as a reusable component** with attrs and slots so it can be shared, rather than duplicating markup across templates
 
+<!-- auth:begin — removed by bin/remove-auth.sh -->
 <!-- phoenix-gen-auth-start -->
 ## Authentication
 
@@ -133,6 +134,7 @@ LiveViews that can work with or without authentication, **always use the __exist
 Controllers automatically have the `current_scope` available if they use the `:browser` pipeline.
 
 <!-- phoenix-gen-auth-end -->
+<!-- auth:end -->
 
 <!-- usage-rules-start -->
 <!-- phoenix:ecto-start -->

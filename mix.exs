@@ -53,7 +53,9 @@ defmodule TemplatePhoenix.MixProject do
   # Type `mix help deps` for examples and options.
   defp deps do
     [
+      # auth:begin — removed by bin/remove-auth.sh
       {:argon2_elixir, "~> 4.0"},
+      # auth:end
       {:usage_rules, "~> 1.0", only: [:dev]},
       {:phoenix, "~> 1.8.12"},
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},

@@ -7,6 +7,7 @@
 # General application configuration
 import Config
 
+# auth:begin — removed by bin/remove-auth.sh
 config :template_phoenix, :scopes,
   user: [
     default: true,
@@ -19,6 +20,8 @@ config :template_phoenix, :scopes,
     test_data_fixture: TemplatePhoenix.AccountsFixtures,
     test_setup_helper: :register_and_log_in_user
   ]
+
+# auth:end
 
 config :template_phoenix,
   ecto_repos: [TemplatePhoenix.Repo],
