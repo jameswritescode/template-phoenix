@@ -73,6 +73,14 @@ defmodule TemplatePhoenixWeb.UserLive.Settings do
             Save Password
           </.button>
         </.form>
+
+        <div class="divider">or</div>
+
+        <div class="text-center">
+          <.link navigate={~p"/users/settings/passkeys"} id="settings-passkeys-link">
+            Manage passkeys
+          </.link>
+        </div>
       </div>
     </Layouts.app>
     """
