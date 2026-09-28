@@ -9,6 +9,7 @@ defmodule TemplatePhoenix.AccountsFixtures do
   alias TemplatePhoenix.Accounts
   alias TemplatePhoenix.Accounts.Scope
   alias TemplatePhoenix.Accounts.User
+  alias TemplatePhoenix.Accounts.UserPasskey
 
   @spec unique_user_email() :: String.t()
   def unique_user_email, do: "user#{System.unique_integer()}@example.com"
@@ -101,5 +102,21 @@ defmodule TemplatePhoenix.AccountsFixtures do
       from(ut in Accounts.UserToken, where: ut.token == ^token),
       set: [inserted_at: dt, authenticated_at: dt]
     )
+  end
+
+  @spec user_passkey_fixture(User.t(), keyword()) :: UserPasskey.t()
+  def user_passkey_fixture(user, opts \\ []) do
+    %UserPasskey{
+      user_id: user.id,
+      credential_id: Keyword.get(opts, :credential_id, :crypto.strong_rand_bytes(16)),
+      public_key:
+        Keyword.get(opts, :public_key, %{1 => 1, 3 => -8, -1 => :crypto.strong_rand_bytes(32)}),
+      sign_count: Keyword.get(opts, :sign_count, 0),
+      aaguid: <<0::128>>
+    }
+    |> UserPasskey.register_changeset(%{
+      "name" => Keyword.get(opts, :name, "Test passkey")
+    })
+    |> TemplatePhoenix.Repo.insert!()
   end
 end
