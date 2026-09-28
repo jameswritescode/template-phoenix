@@ -4,6 +4,7 @@ defmodule TemplatePhoenixWeb.UserSessionControllerTest do
   import Ecto.Query
   import TemplatePhoenix.AccountsFixtures
   alias TemplatePhoenix.Accounts
+  alias TemplatePhoenixWeb.UserAuth
 
   setup do
     %{unconfirmed_user: unconfirmed_user_fixture(), user: user_fixture()}
@@ -300,6 +301,100 @@ defmodule TemplatePhoenixWeb.UserSessionControllerTest do
       assert redirected_to(conn) == ~p"/"
     end
   end
+
+  describe "sudo and the carve-out for passkey accounts" do
+    setup %{conn: conn} do
+      user = user_fixture() |> set_password()
+      passkey = user_passkey_fixture(user)
+      %{conn: conn, user: user, passkey: passkey}
+    end
+
+    test "password re-auth with STALE sudo does not refresh authenticated_at",
+         %{user: user} do
+      conn = log_in_user(build_conn(), user, token_authenticated_at: stale_authenticated_at())
+
+      reauth =
+        post(conn, ~p"/users/log-in", %{
+          "user" => %{"email" => user.email, "password" => valid_user_password()}
+        })
+
+      assert redirected_to(reauth) == ~p"/users/log-in/two-factor"
+
+      # the old session token is untouched and still stale:
+      {reloaded, _token_inserted_at} =
+        Accounts.get_user_by_session_token(get_session(conn, :user_token))
+
+      assert reloaded.id == user.id
+      refute Accounts.sudo_mode?(reloaded)
+    end
+
+    test "completing the passkey step refreshes sudo (fresh authenticated_at)", %{user: user} do
+      stale = log_in_user(build_conn(), user, token_authenticated_at: stale_authenticated_at())
+      token = issue_webauthn_login_token(user, "second_factor")
+
+      refreshed =
+        post(recycle(stale), ~p"/users/log-in/passkey", %{"user" => %{"token" => token}})
+
+      {refreshed_user, _token_inserted_at} =
+        Accounts.get_user_by_session_token(get_session(refreshed, :user_token))
+
+      assert Accounts.sudo_mode?(refreshed_user)
+    end
+
+    test "carve-out: sudo-FRESH same-user re-mint skips the ceremony", %{user: user} do
+      # fresh authenticated_at (defaults to now)
+      conn = log_in_user(build_conn(), user)
+
+      remint =
+        conn
+        |> UserAuth.fetch_current_scope_for_user([])
+        |> UserAuth.log_in_user(user)
+
+      assert get_session(remint, :user_token)
+      refute get_session(remint, :passkey_2fa_token)
+    end
+
+    test "carve-out: still applies at ~15 minutes old (inside sudo_mode?/1's 20-minute default, " <>
+           "outside the on_mount(:require_sudo_mode) gate's 10-minute window)",
+         %{user: user} do
+      conn =
+        log_in_user(build_conn(), user,
+          token_authenticated_at: inside_carve_out_outside_gate_at()
+        )
+
+      remint =
+        conn
+        |> UserAuth.fetch_current_scope_for_user([])
+        |> UserAuth.log_in_user(user)
+
+      assert get_session(remint, :user_token)
+      refute get_session(remint, :passkey_2fa_token)
+    end
+
+    test "carve-out does NOT apply to a different user", %{user: user} do
+      other = user_fixture()
+      _other_passkey = user_passkey_fixture(other)
+      # fresh session as `user`
+      conn = log_in_user(build_conn(), user)
+
+      remint =
+        conn
+        |> UserAuth.fetch_current_scope_for_user([])
+        |> UserAuth.log_in_user(other)
+
+      refute get_session(remint, :user_token)
+    end
+  end
+
+  # Well past both the on_mount(:require_sudo_mode) gate's 10-minute window
+  # and sudo_mode?/1's 20-minute default — unambiguously stale either way.
+  defp stale_authenticated_at, do: DateTime.add(DateTime.utc_now(:second), -2, :hour)
+
+  # Pins the carve-out's actual window: inside sudo_mode?/1's 20-minute
+  # default (so the carve-out still applies) but outside the generated
+  # on_mount(:require_sudo_mode)'s 10-minute window (so this cannot be
+  # mistaken for merely "fresh").
+  defp inside_carve_out_outside_gate_at, do: DateTime.add(DateTime.utc_now(:second), -15, :minute)
 
   defp pending_2fa_token_count(user) do
     TemplatePhoenix.Repo.aggregate(

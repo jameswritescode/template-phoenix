@@ -198,5 +198,27 @@ defmodule TemplatePhoenixWeb.UserLive.LoginTest do
       assert render(view) =~ "We couldn&#39;t verify that passkey"
       assert token_count.() == 1
     end
+
+    test "re-auth (sudo) uses an allow-listed challenge for the current user",
+         %{conn: conn} do
+      user = user_fixture()
+      passkey = user_passkey_fixture(user, credential_id: "sudo-cred")
+
+      conn = log_in_user(conn, user, token_authenticated_at: stale_authenticated_at())
+      {:ok, view, _html} = live(conn, ~p"/users/log-in")
+
+      view |> element("#passkey-login-button") |> render_click()
+
+      assert_push_event(view, "webauthn:authenticate", %{allowCredentials: [%{id: allowed}]})
+      assert allowed == Base.url_encode64(passkey.credential_id, padding: false)
+
+      render_hook(view, "webauthn:asserted", webauthn_assertion_payload(passkey.credential_id))
+      assert has_element?(view, "#passkey-complete-form input[name='user[token]'][value]")
+    end
   end
+
+  # Well past sudo_mode?/1's 20-minute default, so the login LiveView mounts
+  # into the re-authentication (sudo) branch rather than the plain
+  # signed-out one.
+  defp stale_authenticated_at, do: DateTime.add(DateTime.utc_now(:second), -2, :hour)
 end
