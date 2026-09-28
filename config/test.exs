@@ -3,6 +3,7 @@ import Config
 # auth:begin — removed by bin/remove-auth.sh
 # Only in tests, remove the complexity from the password hashing algorithm
 config :argon2_elixir, t_cost: 1, m_cost: 8
+config :template_phoenix, :webauthn_module, TemplatePhoenix.MockWebAuthn
 # auth:end
 
 # MIX_TEST_PARTITION suffixes the test database name, same normalized form as

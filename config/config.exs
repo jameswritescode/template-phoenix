@@ -27,6 +27,10 @@ config :template_phoenix,
   ecto_repos: [TemplatePhoenix.Repo],
   generators: [timestamp_type: :utc_datetime]
 
+# auth:begin — removed by bin/remove-auth.sh
+config :template_phoenix, :webauthn, endpoint: TemplatePhoenixWeb.Endpoint
+# auth:end
+
 # Configure the endpoint
 config :template_phoenix, TemplatePhoenixWeb.Endpoint,
   url: [host: "localhost"],

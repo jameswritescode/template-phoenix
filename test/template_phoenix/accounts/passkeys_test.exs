@@ -2,6 +2,8 @@ defmodule TemplatePhoenix.Accounts.PasskeysTest do
   use TemplatePhoenix.DataCase, async: true
 
   alias TemplatePhoenix.Accounts.UserPasskey
+  alias TemplatePhoenix.Accounts.WebAuthn
+  alias TemplatePhoenixWeb.Endpoint
 
   import TemplatePhoenix.AccountsFixtures
 
@@ -44,6 +46,15 @@ defmodule TemplatePhoenix.Accounts.PasskeysTest do
           name: "dup"
         })
       end
+    end
+  end
+
+  describe "WebAuthn.ceremony_opts/0" do
+    test "derives origin and rp_id from the endpoint at runtime" do
+      opts = WebAuthn.ceremony_opts()
+      assert opts[:origin] == Endpoint.url()
+      assert opts[:rp_id] == Endpoint.host()
+      assert opts[:user_verification] == "required"
     end
   end
 end
