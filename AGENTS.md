@@ -74,6 +74,23 @@ custom classes must fully style the input
 - When new UI is needed, bias toward **building it as a reusable component** with attrs and slots so it can be shared, rather than duplicating markup across templates
 
 <!-- auth:begin — removed by bin/remove-auth.sh -->
+### Authentication
+
+- Auth lives in `TemplatePhoenix.Accounts` (+ `Accounts.Passkeys`); sessions
+  are minted ONLY in `UserAuth.do_log_in_user/3` — never write `:user_token`
+  to the session anywhere else, and never add a login path that bypasses
+  `UserAuth.log_in_user/3`
+- Accounts with ≥1 passkey require a passkey second factor on EVERY sign-in
+  path; do not weaken this when adding auth-adjacent features
+- Every edit to a pre-auth (shared) file that supports auth must sit inside
+  the auth marker region (see `bin/remove-auth.sh` for the literal syntax),
+  and new auth files must be added to `bin/remove-auth.sh` — `mix test`
+  (marker tripwire) and the remove-auth CI job enforce this
+- To remove auth from a derived project, use the `remove-auth` skill / run
+  `bin/remove-auth.sh` — never hand-delete auth files
+<!-- auth:end -->
+
+<!-- auth:begin — removed by bin/remove-auth.sh -->
 <!-- phoenix-gen-auth-start -->
 ## Authentication
 

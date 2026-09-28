@@ -43,6 +43,8 @@ DELETE_PATHS=(
   "assets/js/webauthn_codec.js"
   "assets/js/hooks/passkey.js"
   "assets/test/webauthn_codec.test.js"
+  ".agents/skills/remove-auth"
+  ".claude/skills/remove-auth"
 )
 
 MARKED_FILES=(
@@ -56,6 +58,8 @@ MARKED_FILES=(
   "config/config.exs"
   "config/test.exs"
   "AGENTS.md"
+  "README.md"
+  ".github/workflows/ci.yml"
 )
 
 shopt -s nullglob
