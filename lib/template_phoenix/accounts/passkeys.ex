@@ -224,6 +224,7 @@ defmodule TemplatePhoenix.Accounts.Passkeys do
          {:ok, passkey, user} <- fetch_passkey_globally(credential_id),
          :ok <- check_user_handle(user, user_handle),
          {:ok, auth_data} <- run_assertion(passkey, challenge, payload),
+         :ok <- require_user_verified(auth_data),
          :ok <- check_and_bump_sign_count(passkey, auth_data.sign_count) do
       finish_assertion(user, passkey, "discoverable")
     else
@@ -241,6 +242,7 @@ defmodule TemplatePhoenix.Accounts.Passkeys do
     with {:ok, credential_id} <- decode_field(payload, "credential_id"),
          {:ok, passkey} <- fetch_passkey_for_user(user, credential_id),
          {:ok, auth_data} <- run_assertion(passkey, challenge, payload),
+         :ok <- require_user_verified(auth_data),
          :ok <- check_and_bump_sign_count(passkey, auth_data.sign_count) do
       finish_assertion(user, passkey, "second_factor")
     else

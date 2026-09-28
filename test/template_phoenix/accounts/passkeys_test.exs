@@ -9,6 +9,7 @@ defmodule TemplatePhoenix.Accounts.PasskeysTest do
   alias TemplatePhoenix.Accounts.Passkeys
   alias TemplatePhoenix.Accounts.Scope
   alias TemplatePhoenix.Accounts.UserPasskey
+  alias TemplatePhoenix.Accounts.UserToken
   alias TemplatePhoenix.Accounts.WebAuthn
   alias TemplatePhoenixWeb.Endpoint
 
@@ -269,6 +270,25 @@ defmodule TemplatePhoenix.Accounts.PasskeysTest do
       assert {:error, :invalid_payload} =
                Passkeys.verify_assertion_and_issue_login_token(challenge, payload)
     end
+
+    test "missing user verification is rejected and issues no login token",
+         %{user: user, passkey: passkey, challenge: challenge} do
+      Mox.expect(TemplatePhoenix.MockWebAuthn, :authenticate, fn cred_id, _, _, _, _, _ ->
+        {:ok, FakeWebAuthn.auth_data(credential_id: cred_id, flag_user_verified: false)}
+      end)
+
+      payload = webauthn_assertion_payload(passkey.credential_id, user.webauthn_user_handle)
+
+      assert {:error, :verification_failed} =
+               Passkeys.verify_assertion_and_issue_login_token(challenge, payload)
+
+      assert Repo.aggregate(
+               from(t in UserToken,
+                 where: t.user_id == ^user.id and t.context == "webauthn-login"
+               ),
+               :count
+             ) == 0
+    end
   end
 
   describe "second-factor assertion" do
@@ -304,6 +324,25 @@ defmodule TemplatePhoenix.Accounts.PasskeysTest do
 
       assert {:error, :verification_failed} =
                Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
+    end
+
+    test "missing user verification is rejected and issues no login token",
+         %{user: user, passkey: passkey, challenge: challenge} do
+      Mox.expect(TemplatePhoenix.MockWebAuthn, :authenticate, fn cred_id, _, _, _, _, _ ->
+        {:ok, FakeWebAuthn.auth_data(credential_id: cred_id, flag_user_verified: false)}
+      end)
+
+      payload = webauthn_assertion_payload(passkey.credential_id)
+
+      assert {:error, :verification_failed} =
+               Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
+
+      assert Repo.aggregate(
+               from(t in UserToken,
+                 where: t.user_id == ^user.id and t.context == "webauthn-login"
+               ),
+               :count
+             ) == 0
     end
   end
 
