@@ -72,6 +72,8 @@ defmodule TemplatePhoenix.MixProject do
     [
       # auth:begin — removed by bin/remove-auth.sh
       {:argon2_elixir, "~> 4.0"},
+      {:wax_, "~> 0.7"},
+      {:mox, "~> 1.1", only: :test},
       # auth:end
       {:usage_rules, "~> 1.0", only: [:dev]},
       {:phoenix, "~> 1.8.12"},
