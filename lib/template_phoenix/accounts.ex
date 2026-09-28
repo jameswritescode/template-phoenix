@@ -363,6 +363,18 @@ defmodule TemplatePhoenix.Accounts do
   def delete_pending_second_factor_token(_other), do: :ok
 
   @doc """
+  Deletes every pending second-factor token for `user`. Always returns `:ok`.
+  """
+  @spec delete_pending_second_factor_tokens_for_user(User.t()) :: :ok
+  def delete_pending_second_factor_tokens_for_user(%User{id: user_id}) do
+    Repo.delete_all(
+      from(t in UserToken, where: t.user_id == ^user_id and t.context == "passkey-2fa")
+    )
+
+    :ok
+  end
+
+  @doc """
   Atomically consumes a webauthn login-completion token (2-minute TTL,
   sourced from `UserToken.consume_passkey_token_query/1`), returning the
   user and the tag recorded at issuance ("second_factor" or "discoverable").

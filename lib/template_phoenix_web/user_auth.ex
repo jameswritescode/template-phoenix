@@ -9,6 +9,7 @@ defmodule TemplatePhoenixWeb.UserAuth do
   import Phoenix.Controller
 
   alias TemplatePhoenix.Accounts
+  alias TemplatePhoenix.Accounts.Passkeys
   alias TemplatePhoenix.Accounts.Scope
 
   # Make the remember me cookie valid for 14 days. This should match
@@ -31,13 +32,67 @@ defmodule TemplatePhoenixWeb.UserAuth do
   @session_reissue_age_in_days 7
 
   @doc """
-  Logs the user in.
+  Logs the user in after a verified first factor (password or magic link).
 
   Redirects to the session's `:user_return_to` path
   or falls back to the `signed_in_path/1`.
+
+  Second-factor gate: when the user has at least one passkey, no session is
+  minted here. Instead the session is fully renewed, a pending second-factor
+  token is stored, and the user is sent to the mandatory passkey step. The
+  only exception is a conn already authenticated as this same user in sudo
+  mode (e.g. the re-mint after a password change).
   """
   @spec log_in_user(Plug.Conn.t(), Accounts.User.t(), map()) :: Plug.Conn.t()
-  def log_in_user(conn, user, params \\ %{}), do: do_log_in_user(conn, user, params)
+  def log_in_user(conn, user, params \\ %{}) do
+    cond do
+      not Passkeys.passkeys_enabled?(user) ->
+        do_log_in_user(conn, user, params)
+
+      sudo_fresh_same_user?(conn, user) ->
+        # Narrow owner-approved carve-out: this conn is already fully
+        # authenticated as this user with a sudo-fresh ceremony — e.g. the
+        # password-change re-mint seconds after sudo demanded a passkey.
+        do_log_in_user(conn, user, params)
+
+      true ->
+        redirect_to_second_factor(conn, user, params)
+    end
+  end
+
+  defp sudo_fresh_same_user?(conn, user) do
+    case conn.assigns[:current_scope] do
+      %Scope{user: %Accounts.User{id: id} = scope_user} when id == user.id ->
+        Accounts.sudo_mode?(scope_user)
+
+      _other ->
+        false
+    end
+  end
+
+  defp redirect_to_second_factor(conn, user, params) do
+    :telemetry.execute(
+      [:template_phoenix, :accounts, :login],
+      %{count: 1},
+      %{result: :second_factor_required}
+    )
+
+    user_return_to = get_session(conn, :user_return_to)
+
+    conn
+    |> renew_session_for_pending()
+    |> put_session(:passkey_2fa_token, Accounts.generate_pending_second_factor_token(user))
+    |> put_session(:passkey_2fa_remember_me, params["remember_me"] == "true")
+    |> put_session(:user_return_to, user_return_to)
+    |> redirect(to: ~p"/users/log-in/two-factor")
+    |> halt()
+  end
+
+  # Always a full renewal: passing no user skips renew_session's
+  # same-user preservation clause, exactly as log_out_user/1 does. The
+  # pending state must never inherit a pre-login (possibly attacker-fixed)
+  # session or an existing logged-in session.
+  defp renew_session_for_pending(conn), do: renew_session(conn, nil)
 
   @doc """
   Completes a login whose WebAuthn assertion has just been verified.
@@ -225,6 +280,12 @@ defmodule TemplatePhoenixWeb.UserAuth do
       on user_token.
       Redirects to login page if there's no logged user.
 
+    * `:require_pending_second_factor` - Resolves the pending second-factor
+      token from the session (set by the gate in `log_in_user/3`) and
+      assigns `:pending_user` and `:pending_remember_me`. Redirects to the
+      login page if the token is missing, expired, or the user no longer
+      has passkeys.
+
   ## Examples
 
   Use the `on_mount` lifecycle macro in LiveViews to mount or authenticate
@@ -276,6 +337,34 @@ defmodule TemplatePhoenixWeb.UserAuth do
         |> Phoenix.LiveView.redirect(to: ~p"/users/log-in")
 
       {:halt, socket}
+    end
+  end
+
+  def on_mount(:require_pending_second_factor, _params, session, socket) do
+    pending_user =
+      with token when is_binary(token) <- session["passkey_2fa_token"],
+           %Accounts.User{} = user <- Accounts.get_user_by_pending_second_factor_token(token),
+           true <- Passkeys.passkeys_enabled?(user) do
+        user
+      else
+        _invalid -> nil
+      end
+
+    case pending_user do
+      %Accounts.User{} = user ->
+        {:cont,
+         socket
+         |> Phoenix.Component.assign(:pending_user, user)
+         |> Phoenix.Component.assign(
+           :pending_remember_me,
+           session["passkey_2fa_remember_me"] == true
+         )}
+
+      nil ->
+        {:halt,
+         socket
+         |> Phoenix.LiveView.put_flash(:error, "Your sign-in expired. Please log in again.")
+         |> Phoenix.LiveView.redirect(to: ~p"/users/log-in")}
     end
   end
 

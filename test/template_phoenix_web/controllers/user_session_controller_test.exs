@@ -1,6 +1,7 @@
 defmodule TemplatePhoenixWeb.UserSessionControllerTest do
   use TemplatePhoenixWeb.ConnCase, async: true
 
+  import Ecto.Query
   import TemplatePhoenix.AccountsFixtures
   alias TemplatePhoenix.Accounts
 
@@ -182,6 +183,129 @@ defmodule TemplatePhoenixWeb.UserSessionControllerTest do
       refute get_session(conn, :to_be_removed)
       assert get_session(conn, :user_token)
     end
+  end
+
+  describe "second-factor gate" do
+    setup do
+      user = user_fixture() |> set_password()
+      %{user: user, passkey: user_passkey_fixture(user)}
+    end
+
+    test "password login with a passkey on the account mints NO session", %{
+      conn: conn,
+      user: user
+    } do
+      conn =
+        post(conn, ~p"/users/log-in", %{
+          "user" => %{
+            "email" => user.email,
+            "password" => valid_user_password(),
+            "remember_me" => "true"
+          }
+        })
+
+      refute get_session(conn, :user_token)
+      assert redirected_to(conn) == ~p"/users/log-in/two-factor"
+
+      pending = get_session(conn, :passkey_2fa_token)
+      assert Accounts.get_user_by_pending_second_factor_token(pending).id == user.id
+      assert get_session(conn, :passkey_2fa_remember_me) == true
+    end
+
+    test "magic-link login detours the same way AND consumes the link", %{conn: conn, user: user} do
+      token =
+        extract_user_token(fn url -> Accounts.deliver_login_instructions(user, url) end)
+
+      conn = post(conn, ~p"/users/log-in", %{"user" => %{"token" => token}})
+      refute get_session(conn, :user_token)
+      assert redirected_to(conn) == ~p"/users/log-in/two-factor"
+
+      retry = post(build_conn(), ~p"/users/log-in", %{"user" => %{"token" => token}})
+      refute get_session(retry, :user_token)
+      refute redirected_to(retry) == ~p"/users/log-in/two-factor"
+      assert redirected_to(retry) == ~p"/users/log-in"
+    end
+
+    test "the detour renews the session and preserves return_to", %{conn: conn, user: user} do
+      conn =
+        conn
+        |> init_test_session(user_return_to: "/users/settings", fixate: "attacker")
+        |> post(~p"/users/log-in", %{
+          "user" => %{"email" => user.email, "password" => valid_user_password()}
+        })
+
+      refute get_session(conn, :fixate)
+      assert get_session(conn, :user_return_to) == "/users/settings"
+    end
+
+    test "completing 2FA yields a session honoring return_to and remember_me",
+         %{conn: conn, user: user} do
+      login =
+        conn
+        |> init_test_session(user_return_to: "/users/settings")
+        |> post(~p"/users/log-in", %{
+          "user" => %{
+            "email" => user.email,
+            "password" => valid_user_password(),
+            "remember_me" => "true"
+          }
+        })
+
+      token = issue_webauthn_login_token(user, "second_factor")
+
+      completed =
+        recycle(login)
+        |> post(~p"/users/log-in/passkey", %{"user" => %{"token" => token}})
+
+      assert get_session(completed, :user_token)
+      refute get_session(completed, :passkey_2fa_token)
+      refute get_session(completed, :passkey_2fa_remember_me)
+      assert pending_2fa_token_count(user) == 0
+      assert redirected_to(completed) == "/users/settings"
+      assert completed.resp_cookies["_template_phoenix_web_user_remember_me"]
+    end
+
+    test "the remember_me captured at the gate wins over the completion form's value",
+         %{conn: conn, user: user} do
+      login =
+        post(conn, ~p"/users/log-in", %{
+          "user" => %{
+            "email" => user.email,
+            "password" => valid_user_password(),
+            "remember_me" => "true"
+          }
+        })
+
+      token = issue_webauthn_login_token(user, "second_factor")
+
+      completed =
+        recycle(login)
+        |> post(~p"/users/log-in/passkey", %{
+          "user" => %{"token" => token, "remember_me" => "false"}
+        })
+
+      assert get_session(completed, :user_token)
+      assert completed.resp_cookies["_template_phoenix_web_user_remember_me"]
+    end
+
+    test "accounts WITHOUT passkeys are completely unaffected", %{conn: conn} do
+      plain = user_fixture() |> set_password()
+
+      conn =
+        post(conn, ~p"/users/log-in", %{
+          "user" => %{"email" => plain.email, "password" => valid_user_password()}
+        })
+
+      assert get_session(conn, :user_token)
+      assert redirected_to(conn) == ~p"/"
+    end
+  end
+
+  defp pending_2fa_token_count(user) do
+    TemplatePhoenix.Repo.aggregate(
+      from(t in Accounts.UserToken, where: t.user_id == ^user.id and t.context == "passkey-2fa"),
+      :count
+    )
   end
 
   describe "DELETE /users/log-out" do
