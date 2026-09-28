@@ -81,6 +81,15 @@ for file in "${MARKED_FILES[@]}"; do
   if ! grep -q 'auth:begin' "$file" 2>/dev/null; then
     echo "No auth markers found in: $file" >&2
     problems=$((problems + 1))
+  # Unbalanced or nested markers would make the strip below silently eat
+  # (or keep) the wrong lines, so the depth must stay within 0..1 and end at 0.
+  elif ! awk '
+      /auth:begin/ { depth++; if (depth > 1) { bad = 1 } }
+      /auth:end/   { depth--; if (depth < 0) { bad = 1 } }
+      END { exit (bad || depth != 0) }
+    ' "$file"; then
+    echo "Unbalanced or nested auth markers in: $file" >&2
+    problems=$((problems + 1))
   fi
 done
 if [ "${#MIGRATIONS[@]}" -ne 2 ]; then

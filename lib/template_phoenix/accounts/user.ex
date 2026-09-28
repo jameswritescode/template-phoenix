@@ -1,4 +1,6 @@
 defmodule TemplatePhoenix.Accounts.User do
+  @moduledoc "User account schema with email, password, and confirmation changesets."
+
   use Ecto.Schema
   import Ecto.Changeset
 

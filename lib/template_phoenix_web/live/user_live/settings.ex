@@ -1,4 +1,6 @@
 defmodule TemplatePhoenixWeb.UserLive.Settings do
+  @moduledoc "Account settings (email and password changes), behind sudo mode."
+
   use TemplatePhoenixWeb, :live_view
 
   on_mount {TemplatePhoenixWeb.UserAuth, :require_sudo_mode}

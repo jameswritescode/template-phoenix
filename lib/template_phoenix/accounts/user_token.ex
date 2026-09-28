@@ -1,4 +1,6 @@
 defmodule TemplatePhoenix.Accounts.UserToken do
+  @moduledoc "Session, email, and passkey-flow tokens: builders and verification queries."
+
   use Ecto.Schema
   import Ecto.Query
   alias TemplatePhoenix.Accounts.UserToken
@@ -188,18 +190,22 @@ defmodule TemplatePhoenix.Accounts.UserToken do
   @spec build_pending_second_factor_token(TemplatePhoenix.Accounts.User.t()) :: {String.t(), t()}
   def build_pending_second_factor_token(user), do: build_passkey_token(user, "passkey-2fa", nil)
 
-  @doc "Query for a still-valid passkey-flow token joined to its user."
+  @doc """
+  Query for a still-valid pending second-factor token (`"passkey-2fa"`
+  context only) joined to its user. Webauthn-login completion tokens are
+  never looked up this way — they are consumed atomically via
+  `consume_passkey_token_query/1`.
+  """
   @spec verify_passkey_token_query(String.t(), String.t()) :: {:ok, Ecto.Query.t()} | :error
-  def verify_passkey_token_query(encoded, context) do
+  def verify_passkey_token_query(encoded, "passkey-2fa" = context) do
     case Base.url_decode64(encoded, padding: false) do
       {:ok, decoded} ->
         hashed = :crypto.hash(@hash_algorithm, decoded)
-        minutes = passkey_token_validity(context)
 
         query =
           from token in by_token_and_context_query(hashed, context),
             join: user in assoc(token, :user),
-            where: token.inserted_at > ago(^minutes, "minute"),
+            where: token.inserted_at > ago(^@passkey_pending_validity_in_minutes, "minute"),
             select: {user, token}
 
         {:ok, query}
@@ -208,9 +214,6 @@ defmodule TemplatePhoenix.Accounts.UserToken do
         :error
     end
   end
-
-  @spec passkey_token_validity(String.t()) :: pos_integer()
-  defp passkey_token_validity("passkey-2fa"), do: @passkey_pending_validity_in_minutes
 
   @doc """
   Query to atomically delete-and-return a still-valid webauthn-login token

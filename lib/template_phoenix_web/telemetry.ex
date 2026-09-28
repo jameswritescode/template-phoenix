@@ -89,6 +89,7 @@ defmodule TemplatePhoenixWeb.Telemetry do
         description: "Login outcomes by result and method"
       ),
       counter("template_phoenix.accounts.passkey.registered.count"),
+      counter("template_phoenix.accounts.passkey.renamed.count"),
       counter("template_phoenix.accounts.passkey.deleted.count"),
       counter("template_phoenix.accounts.passkey.verification_failed.count"),
       counter("template_phoenix.accounts.passkey.sign_count_regression.count")

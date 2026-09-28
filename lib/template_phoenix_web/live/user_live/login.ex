@@ -1,4 +1,6 @@
 defmodule TemplatePhoenixWeb.UserLive.Login do
+  @moduledoc "Log-in page: password, magic link, and discoverable passkey sign-in."
+
   use TemplatePhoenixWeb, :live_view
 
   alias TemplatePhoenix.Accounts
