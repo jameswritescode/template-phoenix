@@ -1,12 +1,23 @@
 defmodule TemplatePhoenix.Accounts.PasskeysTest do
   use TemplatePhoenix.DataCase, async: true
 
+  import Mox
+  import TemplatePhoenix.AccountsFixtures
+
   alias TemplatePhoenix.Accounts
+  alias TemplatePhoenix.Accounts.FakeWebAuthn
+  alias TemplatePhoenix.Accounts.Passkeys
+  alias TemplatePhoenix.Accounts.Scope
   alias TemplatePhoenix.Accounts.UserPasskey
   alias TemplatePhoenix.Accounts.WebAuthn
   alias TemplatePhoenixWeb.Endpoint
 
-  import TemplatePhoenix.AccountsFixtures
+  setup :verify_on_exit!
+
+  setup do
+    Mox.stub_with(TemplatePhoenix.MockWebAuthn, TemplatePhoenix.Accounts.FakeWebAuthn)
+    :ok
+  end
 
   describe "UserPasskey.register_changeset/2" do
     test "requires a name between 1 and 80 characters" do
@@ -107,6 +118,91 @@ defmodule TemplatePhoenix.Accounts.PasskeysTest do
       backdate_tokens(user, "webauthn-login", minutes: -3)
       assert Accounts.consume_webauthn_login_token(encoded) == :error
       assert Accounts.consume_webauthn_login_token("garbage") == :error
+    end
+  end
+
+  describe "new_registration_challenge/1" do
+    test "generates and persists a stable webauthn_user_handle" do
+      user = user_fixture()
+      assert user.webauthn_user_handle == nil
+
+      {_challenge, user_with_handle, []} =
+        Passkeys.new_registration_challenge(Scope.for_user(user))
+
+      assert byte_size(user_with_handle.webauthn_user_handle) == 32
+
+      {_challenge, again, []} =
+        Passkeys.new_registration_challenge(Scope.for_user(user_with_handle))
+
+      assert again.webauthn_user_handle == user_with_handle.webauthn_user_handle
+    end
+
+    test "excludes already-registered credential ids" do
+      user = user_fixture()
+      passkey = user_passkey_fixture(user)
+      {_challenge, _user, exclude_ids} = Passkeys.new_registration_challenge(Scope.for_user(user))
+      assert exclude_ids == [passkey.credential_id]
+    end
+  end
+
+  describe "register_passkey/4" do
+    setup do
+      user = user_fixture()
+      {challenge, user, _exclude} = Passkeys.new_registration_challenge(Scope.for_user(user))
+      %{user: user, scope: Scope.for_user(user), challenge: challenge}
+    end
+
+    test "persists the verified credential", %{scope: scope, challenge: challenge, user: user} do
+      payload = webauthn_registration_payload("credential-abc")
+
+      assert {:ok, passkey} = Passkeys.register_passkey(scope, challenge, payload, "My laptop")
+      assert passkey.user_id == user.id
+      assert passkey.credential_id == "credential-abc"
+      assert passkey.name == "My laptop"
+      assert Passkeys.passkeys_enabled?(user)
+    end
+
+    test "duplicate credential id is rejected", %{scope: scope, challenge: challenge} do
+      payload = webauthn_registration_payload("credential-dup")
+      assert {:ok, _} = Passkeys.register_passkey(scope, challenge, payload, "One")
+
+      assert {:error, :already_registered} =
+               Passkeys.register_passkey(scope, challenge, payload, "Two")
+    end
+
+    test "undecodable base64url payload fails cleanly", %{scope: scope, challenge: challenge} do
+      payload = %{"attestation_object" => "!!!", "client_data_json" => "!!!"}
+
+      assert {:error, :invalid_payload} =
+               Passkeys.register_passkey(scope, challenge, payload, "X")
+    end
+
+    test "verification failure surfaces as verification_failed", %{
+      scope: scope,
+      challenge: challenge
+    } do
+      Mox.expect(TemplatePhoenix.MockWebAuthn, :register, fn _, _, _ ->
+        {:error, %RuntimeError{message: "bad attestation"}}
+      end)
+
+      payload = webauthn_registration_payload("credential-bad")
+
+      assert {:error, :verification_failed} =
+               Passkeys.register_passkey(scope, challenge, payload, "X")
+    end
+
+    test "missing user verification flag is rejected", %{scope: scope, challenge: challenge} do
+      Mox.expect(TemplatePhoenix.MockWebAuthn, :register, fn attestation_object, _, _ ->
+        auth_data =
+          FakeWebAuthn.auth_data(credential_id: attestation_object, flag_user_verified: false)
+
+        {:ok, {auth_data, :none}}
+      end)
+
+      payload = webauthn_registration_payload("credential-nouv")
+
+      assert {:error, :verification_failed} =
+               Passkeys.register_passkey(scope, challenge, payload, "X")
     end
   end
 end

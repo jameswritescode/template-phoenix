@@ -142,4 +142,26 @@ defmodule TemplatePhoenix.AccountsFixtures do
     })
     |> TemplatePhoenix.Repo.insert!()
   end
+
+  @spec webauthn_registration_payload(binary()) :: map()
+  def webauthn_registration_payload(credential_id) do
+    %{
+      "attestation_object" => Base.url_encode64(credential_id, padding: false),
+      "client_data_json" => Base.url_encode64(~s({"type":"webauthn.create"}), padding: false)
+    }
+  end
+
+  @spec webauthn_assertion_payload(binary(), binary() | nil) :: map()
+  def webauthn_assertion_payload(credential_id, user_handle \\ nil) do
+    base = %{
+      "credential_id" => Base.url_encode64(credential_id, padding: false),
+      "authenticator_data" => Base.url_encode64("auth-data", padding: false),
+      "signature" => Base.url_encode64("signature", padding: false),
+      "client_data_json" => Base.url_encode64(~s({"type":"webauthn.get"}), padding: false)
+    }
+
+    if user_handle,
+      do: Map.put(base, "user_handle", Base.url_encode64(user_handle, padding: false)),
+      else: base
+  end
 end
