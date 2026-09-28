@@ -87,6 +87,11 @@ defmodule TemplatePhoenixWeb.UserLive.SettingsTest do
       assert result =~ "Change Email"
       assert result =~ "did not change"
     end
+
+    test "navbar shows the user menu when signed in", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/users/settings")
+      assert has_element?(view, "#user-menu-log-out")
+    end
   end
 
   describe "update password form" do

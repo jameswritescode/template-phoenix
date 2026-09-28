@@ -53,6 +53,18 @@ defmodule TemplatePhoenixWeb.Layouts do
           <li>
             <a href="https://github.com/phoenixframework/phoenix" class="btn btn-ghost">GitHub</a>
           </li>
+          <%!-- auth:begin — removed by bin/remove-auth.sh --%>
+          <%= if @current_scope do %>
+            <li class="text-sm opacity-75 px-2" id="user-menu-email">{@current_scope.user.email}</li>
+            <li><.link navigate={~p"/users/settings"} id="user-menu-settings">Settings</.link></li>
+            <li>
+              <.link href={~p"/users/log-out"} method="delete" id="user-menu-log-out">Log out</.link>
+            </li>
+          <% else %>
+            <li><.link navigate={~p"/users/register"} id="user-menu-register">Register</.link></li>
+            <li><.link navigate={~p"/users/log-in"} id="user-menu-log-in">Log in</.link></li>
+          <% end %>
+          <%!-- auth:end --%>
           <li>
             <.theme_toggle />
           </li>
