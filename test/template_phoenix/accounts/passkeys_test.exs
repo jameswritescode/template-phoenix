@@ -178,6 +178,13 @@ defmodule TemplatePhoenix.Accounts.PasskeysTest do
                Passkeys.register_passkey(scope, challenge, payload, "X")
     end
 
+    test "non-map payload is rejected without raising", %{scope: scope, challenge: challenge} do
+      assert {:error, :invalid_payload} = Passkeys.register_passkey(scope, challenge, nil, "X")
+
+      assert {:error, :invalid_payload} =
+               Passkeys.register_passkey(scope, challenge, ["not", "a", "map"], "X")
+    end
+
     test "verification failure surfaces as verification_failed", %{
       scope: scope,
       challenge: challenge
@@ -271,6 +278,14 @@ defmodule TemplatePhoenix.Accounts.PasskeysTest do
                Passkeys.verify_assertion_and_issue_login_token(challenge, payload)
     end
 
+    test "non-map payload is rejected without raising", %{challenge: challenge} do
+      assert {:error, :invalid_payload} =
+               Passkeys.verify_assertion_and_issue_login_token(challenge, nil)
+
+      assert {:error, :invalid_payload} =
+               Passkeys.verify_assertion_and_issue_login_token(challenge, ["not", "a", "map"])
+    end
+
     test "missing user verification is rejected and issues no login token",
          %{user: user, passkey: passkey, challenge: challenge} do
       Mox.expect(TemplatePhoenix.MockWebAuthn, :authenticate, fn cred_id, _, _, _, _, _ ->
@@ -324,6 +339,18 @@ defmodule TemplatePhoenix.Accounts.PasskeysTest do
 
       assert {:error, :verification_failed} =
                Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
+    end
+
+    test "non-map payload is rejected without raising", %{user: user, challenge: challenge} do
+      assert {:error, :invalid_payload} =
+               Passkeys.verify_second_factor_and_issue_login_token(user, challenge, nil)
+
+      assert {:error, :invalid_payload} =
+               Passkeys.verify_second_factor_and_issue_login_token(user, challenge, [
+                 "not",
+                 "a",
+                 "map"
+               ])
     end
 
     test "missing user verification is rejected and issues no login token",
@@ -396,16 +423,63 @@ defmodule TemplatePhoenix.Accounts.PasskeysTest do
                Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
 
       assert_received {[:template_phoenix, :accounts, :passkey, :sign_count_regression], ^ref, _,
-                       _}
+                       %{kind: :not_increasing}}
 
       assert Repo.get!(UserPasskey, passkey.id).sign_count == 10
     end
 
-    test "optimistic guard: concurrent bump of the row rejects the assertion", %{user: user} do
+    test "equal counts are rejected as not increasing", %{user: user} do
       passkey = user_passkey_fixture(user, sign_count: 5)
       {challenge, _} = Passkeys.new_authentication_challenge_for_user(user)
 
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [
+          [:template_phoenix, :accounts, :passkey, :sign_count_regression]
+        ])
+
       Mox.expect(TemplatePhoenix.MockWebAuthn, :authenticate, fn cred_id, _, _, _, _, _ ->
+        {:ok, FakeWebAuthn.auth_data(credential_id: cred_id, sign_count: 5)}
+      end)
+
+      payload = webauthn_assertion_payload(passkey.credential_id)
+
+      assert {:error, :verification_failed} =
+               Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
+
+      assert_received {[:template_phoenix, :accounts, :passkey, :sign_count_regression], ^ref, _,
+                       %{kind: :not_increasing, stored: 5, received: 5}}
+
+      assert Repo.get!(UserPasskey, passkey.id).sign_count == 5
+    end
+
+    test "stored > 0 with received 0 is rejected", %{user: user} do
+      passkey = user_passkey_fixture(user, sign_count: 4)
+      {challenge, _} = Passkeys.new_authentication_challenge_for_user(user)
+
+      Mox.expect(TemplatePhoenix.MockWebAuthn, :authenticate, fn cred_id, _, _, _, _, _ ->
+        {:ok, FakeWebAuthn.auth_data(credential_id: cred_id, sign_count: 0)}
+      end)
+
+      payload = webauthn_assertion_payload(passkey.credential_id)
+
+      assert {:error, :verification_failed} =
+               Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
+
+      assert Repo.get!(UserPasskey, passkey.id).sign_count == 4
+    end
+
+    test "optimistic guard: concurrent bump past the received count rejects the assertion (lost_race)",
+         %{user: user} do
+      passkey = user_passkey_fixture(user, sign_count: 5)
+      {challenge, _} = Passkeys.new_authentication_challenge_for_user(user)
+
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [
+          [:template_phoenix, :accounts, :passkey, :sign_count_regression]
+        ])
+
+      Mox.expect(TemplatePhoenix.MockWebAuthn, :authenticate, fn cred_id, _, _, _, _, _ ->
+        # Concurrent writer bumps the row to 7 before our own commit lands.
         Repo.update_all(
           from(p in UserPasskey, where: p.id == ^passkey.id),
           set: [sign_count: 7]
@@ -418,6 +492,37 @@ defmodule TemplatePhoenix.Accounts.PasskeysTest do
 
       assert {:error, :verification_failed} =
                Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
+
+      assert_received {[:template_phoenix, :accounts, :passkey, :sign_count_regression], ^ref, _,
+                       %{kind: :lost_race, stored: 5, received: 6}}
+
+      assert Repo.get!(UserPasskey, passkey.id).sign_count == 7
+    end
+
+    test "genuine lost race: a concurrent bump below the received count still succeeds", %{
+      user: user
+    } do
+      passkey = user_passkey_fixture(user, sign_count: 5)
+      {challenge, _} = Passkeys.new_authentication_challenge_for_user(user)
+
+      Mox.expect(TemplatePhoenix.MockWebAuthn, :authenticate, fn cred_id, _, _, _, _, _ ->
+        # Concurrent writer bumps the row to 6 — still below our received
+        # count of 7, so our commit-time guard (`sign_count < received`)
+        # still matches the row and wins the race.
+        Repo.update_all(
+          from(p in UserPasskey, where: p.id == ^passkey.id),
+          set: [sign_count: 6]
+        )
+
+        {:ok, FakeWebAuthn.auth_data(credential_id: cred_id, sign_count: 7)}
+      end)
+
+      payload = webauthn_assertion_payload(passkey.credential_id)
+
+      assert {:ok, _, _} =
+               Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
+
+      assert Repo.get!(UserPasskey, passkey.id).sign_count == 7
     end
   end
 
@@ -449,6 +554,46 @@ defmodule TemplatePhoenix.Accounts.PasskeysTest do
       assert {:ok, _deleted, 1} = Passkeys.delete_passkey(scope, passkey.id)
       assert {:ok, _deleted, 0} = Passkeys.delete_passkey(scope, second.id)
       refute Passkeys.passkeys_enabled?(user)
+    end
+  end
+
+  describe "single-mint-site invariant (architecture)" do
+    # The two files allowed to reference the "webauthn-login" context
+    # literal at all: `Passkeys` mints it (only inside the two verified
+    # assertion functions — see its moduledoc), `UserToken` builds and
+    # queries it. No other lib/ file should ever need this string.
+    @webauthn_login_string_files ~w(
+      lib/template_phoenix/accounts/passkeys.ex
+      lib/template_phoenix/accounts/user_token.ex
+    )
+
+    # `build_passkey_token/3` itself is only ever called from `Passkeys`
+    # (webauthn-login completion tokens) and from `UserToken` itself
+    # (its `build_pending_second_factor_token/1` wrapper mints the
+    # passkey-2fa context so `Accounts` never has to call the shared
+    # builder directly).
+    @build_passkey_token_caller_files ~w(
+      lib/template_phoenix/accounts/passkeys.ex
+      lib/template_phoenix/accounts/user_token.ex
+    )
+
+    test "\"webauthn-login\" appears in no lib/ file outside the mint/query sites" do
+      for path <- lib_files(), path not in @webauthn_login_string_files do
+        refute File.read!(path) =~ "webauthn-login",
+               "#{path}: unexpected \"webauthn-login\" reference outside the sanctioned files"
+      end
+    end
+
+    test "build_passkey_token/3 is called from no lib/ file outside the sanctioned callers" do
+      for path <- lib_files(), path not in @build_passkey_token_caller_files do
+        refute File.read!(path) =~ "build_passkey_token(",
+               "#{path}: unexpected build_passkey_token/3 call outside the sanctioned callers"
+      end
+    end
+
+    @spec lib_files() :: [Path.t()]
+    defp lib_files do
+      "lib/**/*.ex" |> Path.wildcard() |> Enum.filter(&File.regular?/1)
     end
   end
 end

@@ -310,12 +310,17 @@ defmodule TemplatePhoenix.Accounts do
   """
   @spec generate_pending_second_factor_token(User.t()) :: String.t()
   def generate_pending_second_factor_token(user) do
-    Repo.delete_all(
-      from(t in UserToken, where: t.user_id == ^user.id and t.context == "passkey-2fa")
-    )
+    {:ok, encoded} =
+      Repo.transact(fn ->
+        Repo.delete_all(
+          from(t in UserToken, where: t.user_id == ^user.id and t.context == "passkey-2fa")
+        )
 
-    {encoded, token} = UserToken.build_passkey_token(user, "passkey-2fa", nil)
-    Repo.insert!(token)
+        {encoded, token} = UserToken.build_pending_second_factor_token(user)
+        Repo.insert!(token)
+        {:ok, encoded}
+      end)
+
     encoded
   end
 
@@ -358,33 +363,31 @@ defmodule TemplatePhoenix.Accounts do
   def delete_pending_second_factor_token(_other), do: :ok
 
   @doc """
-  Atomically consumes a webauthn-login token (2-minute TTL), returning the
+  Atomically consumes a webauthn login-completion token (2-minute TTL,
+  sourced from `UserToken.consume_passkey_token_query/1`), returning the
   user and the tag recorded at issuance ("second_factor" or "discoverable").
   Single-use: the row is deleted in the same query that matches it.
+
+  Returns `:error` (never raises) if the user backing the token was deleted
+  in the window between issuance and consumption.
   """
   @spec consume_webauthn_login_token(String.t()) :: {:ok, User.t(), String.t()} | :error
   def consume_webauthn_login_token(encoded) when is_binary(encoded) do
-    case Base.url_decode64(encoded, padding: false) do
-      {:ok, decoded} ->
-        hashed = :crypto.hash(:sha256, decoded)
-
-        delete_query =
-          from t in UserToken,
-            where: t.token == ^hashed and t.context == "webauthn-login",
-            where: t.inserted_at > ago(2, "minute"),
-            select: %{user_id: t.user_id, sent_to: t.sent_to}
-
-        case Repo.delete_all(delete_query) do
-          {1, [%{user_id: user_id, sent_to: method}]} -> {:ok, Repo.get!(User, user_id), method}
-          _none -> :error
-        end
-
-      :error ->
-        :error
+    with {:ok, query} <- UserToken.consume_passkey_token_query(encoded) do
+      query |> Repo.delete_all() |> finish_webauthn_login_token_consumption()
     end
   end
 
   def consume_webauthn_login_token(_other), do: :error
+
+  defp finish_webauthn_login_token_consumption({1, [%{user_id: user_id, sent_to: method}]}) do
+    case Repo.get(User, user_id) do
+      nil -> :error
+      user -> {:ok, user, method}
+    end
+  end
+
+  defp finish_webauthn_login_token_consumption(_none), do: :error
 
   ## Token helper
 
