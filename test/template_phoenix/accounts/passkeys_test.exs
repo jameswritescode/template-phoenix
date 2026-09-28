@@ -199,10 +199,18 @@ defmodule TemplatePhoenix.Accounts.PasskeysTest do
         {:ok, {auth_data, :none}}
       end)
 
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [
+          [:template_phoenix, :accounts, :passkey, :verification_failed]
+        ])
+
       payload = webauthn_registration_payload("credential-nouv")
 
       assert {:error, :verification_failed} =
                Passkeys.register_passkey(scope, challenge, payload, "X")
+
+      assert_received {[:template_phoenix, :accounts, :passkey, :verification_failed], ^ref,
+                       %{count: 1}, %{reason: :user_verification_missing}}
     end
   end
 end

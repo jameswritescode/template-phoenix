@@ -134,7 +134,7 @@ defmodule TemplatePhoenix.Accounts.Passkeys do
       {:error, %Ecto.Changeset{errors: errors}} ->
         if Keyword.has_key?(errors, :credential_id),
           do: {:error, :already_registered},
-          else: {:error, :verification_failed}
+          else: verification_failed(:changeset)
     end
   end
 
@@ -149,12 +149,22 @@ defmodule TemplatePhoenix.Accounts.Passkeys do
   end
 
   defp require_user_verified(%{flag_user_verified: true}), do: :ok
-  defp require_user_verified(_auth_data), do: {:error, :verification_failed}
+  defp require_user_verified(_auth_data), do: verification_failed(:user_verification_missing)
 
   defp verify({:ok, result}), do: {:ok, result}
 
   defp verify({:error, error}) do
     emit([:passkey, :verification_failed], %{error: inspect(error)})
+    {:error, :verification_failed}
+  end
+
+  # Every `{:error, :verification_failed}` return path funnels through here (or
+  # emits inline, for `verify/1`'s wax-error shape) so the moduledoc's "alert
+  # when verification_failed spikes relative to asserted" invariant holds for
+  # all registration failure paths, not just the Wax-rejected ones. `reason`
+  # distinguishes the paths in telemetry metadata.
+  defp verification_failed(reason) do
+    emit([:passkey, :verification_failed], %{reason: reason})
     {:error, :verification_failed}
   end
 
