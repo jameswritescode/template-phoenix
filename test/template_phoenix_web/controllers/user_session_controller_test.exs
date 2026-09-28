@@ -227,6 +227,16 @@ defmodule TemplatePhoenixWeb.UserSessionControllerTest do
       assert redirected_to(retry) == ~p"/users/log-in"
     end
 
+    test "the detour carries no info flash from the magic-link branch", %{conn: conn, user: user} do
+      token =
+        extract_user_token(fn url -> Accounts.deliver_login_instructions(user, url) end)
+
+      conn = post(conn, ~p"/users/log-in", %{"user" => %{"token" => token}})
+
+      assert redirected_to(conn) == ~p"/users/log-in/two-factor"
+      refute Phoenix.Flash.get(conn.assigns.flash, :info)
+    end
+
     test "the detour renews the session and preserves return_to", %{conn: conn, user: user} do
       conn =
         conn
@@ -401,6 +411,93 @@ defmodule TemplatePhoenixWeb.UserSessionControllerTest do
       from(t in Accounts.UserToken, where: t.user_id == ^user.id and t.context == "passkey-2fa"),
       :count
     )
+  end
+
+  describe "login telemetry (single emission point)" do
+    test "login outcomes emit telemetry", %{conn: conn} do
+      user = user_fixture() |> set_password()
+
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [[:template_phoenix, :accounts, :login]])
+
+      post(conn, ~p"/users/log-in", %{
+        "user" => %{"email" => user.email, "password" => valid_user_password()}
+      })
+
+      assert_received {[:template_phoenix, :accounts, :login], ^ref, %{count: 1},
+                       %{result: :success, method: "password"}}
+    end
+
+    test "magic-link login is tagged magic_link", %{conn: conn} do
+      user = user_fixture()
+      {token, _hashed_token} = generate_user_magic_link_token(user)
+
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [[:template_phoenix, :accounts, :login]])
+
+      post(conn, ~p"/users/log-in", %{"user" => %{"token" => token}})
+
+      assert_received {[:template_phoenix, :accounts, :login], ^ref, %{count: 1},
+                       %{result: :success, method: "magic_link"}}
+    end
+
+    test "discoverable passkey completion is tagged passkey_discoverable", %{conn: conn} do
+      user = user_fixture()
+      _passkey = user_passkey_fixture(user)
+      token = issue_webauthn_login_token(user, "discoverable")
+
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [[:template_phoenix, :accounts, :login]])
+
+      post(conn, ~p"/users/log-in/passkey", %{"user" => %{"token" => token}})
+
+      assert_received {[:template_phoenix, :accounts, :login], ^ref, %{count: 1},
+                       %{result: :success, method: "passkey_discoverable"}}
+    end
+
+    test "second-factor passkey completion is tagged passkey_second_factor", %{conn: conn} do
+      user = user_fixture() |> set_password()
+      _passkey = user_passkey_fixture(user)
+
+      login =
+        post(conn, ~p"/users/log-in", %{
+          "user" => %{"email" => user.email, "password" => valid_user_password()}
+        })
+
+      token = issue_webauthn_login_token(user, "second_factor")
+
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [[:template_phoenix, :accounts, :login]])
+
+      recycle(login) |> post(~p"/users/log-in/passkey", %{"user" => %{"token" => token}})
+
+      assert_received {[:template_phoenix, :accounts, :login], ^ref, %{count: 1},
+                       %{result: :success, method: "passkey_second_factor"}}
+    end
+
+    test "invalid password credentials emit a failure event", %{conn: conn} do
+      user = user_fixture() |> set_password()
+
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [[:template_phoenix, :accounts, :login]])
+
+      post(conn, ~p"/users/log-in", %{
+        "user" => %{"email" => user.email, "password" => "invalid_password"}
+      })
+
+      assert_received {[:template_phoenix, :accounts, :login], ^ref, %{count: 1},
+                       %{result: :failure, method: "password"}}
+    end
+
+    test "an invalid magic link emits a failure event", %{conn: conn} do
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [[:template_phoenix, :accounts, :login]])
+
+      post(conn, ~p"/users/log-in", %{"user" => %{"token" => "invalid"}})
+
+      assert_received {[:template_phoenix, :accounts, :login], ^ref, %{count: 1},
+                       %{result: :failure, method: "magic_link"}}
+    end
   end
 
   describe "DELETE /users/log-out" do

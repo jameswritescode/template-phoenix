@@ -168,6 +168,11 @@ defmodule TemplatePhoenixWeb.UserLive.Passkeys do
     {:noreply, put_flash(socket, :error, message)}
   end
 
+  def handle_event("webauthn:error", _params, socket) do
+    {:noreply,
+     put_flash(socket, :error, "Something went wrong with the passkey prompt. Try again.")}
+  end
+
   defp finish_registration(socket, challenge, payload) do
     # The challenge is discarded before calling `register_passkey/4` — on
     # every outcome — per that function's single-use contract: it cannot

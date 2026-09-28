@@ -21,9 +21,15 @@ defmodule TemplatePhoenixWeb.UserSessionController do
 
         conn
         |> put_flash(:info, info)
-        |> UserAuth.log_in_user(user, user_params)
+        |> UserAuth.log_in_user(user, Map.put(user_params, "_login_method", "magic_link"))
 
       _ ->
+        :telemetry.execute(
+          [:template_phoenix, :accounts, :login],
+          %{count: 1},
+          %{result: :failure, method: "magic_link"}
+        )
+
         conn
         |> put_flash(:error, "The link is invalid or it has expired.")
         |> redirect(to: ~p"/users/log-in")
@@ -37,8 +43,14 @@ defmodule TemplatePhoenixWeb.UserSessionController do
     if user = Accounts.get_user_by_email_and_password(email, password) do
       conn
       |> put_flash(:info, info)
-      |> UserAuth.log_in_user(user, user_params)
+      |> UserAuth.log_in_user(user, Map.put(user_params, "_login_method", "password"))
     else
+      :telemetry.execute(
+        [:template_phoenix, :accounts, :login],
+        %{count: 1},
+        %{result: :failure, method: "password"}
+      )
+
       # In order to prevent user enumeration attacks, don't disclose whether the email is registered.
       conn
       |> put_flash(:error, "Invalid email or password")
@@ -51,17 +63,12 @@ defmodule TemplatePhoenixWeb.UserSessionController do
   def create_passkey(conn, %{"user" => %{"token" => token} = user_params}) do
     case Accounts.consume_webauthn_login_token(token) do
       {:ok, user, method} ->
-        :telemetry.execute(
-          [:template_phoenix, :accounts, :login],
-          %{count: 1},
-          %{result: :success, method: "passkey_#{method}"}
-        )
-
         params =
           case get_session(conn, :passkey_2fa_remember_me) do
             nil -> Map.take(user_params, ["remember_me"])
             value -> %{"remember_me" => to_string(value)}
           end
+          |> Map.put("_login_method", "passkey_#{method}")
 
         conn
         |> put_flash(:info, "Welcome back!")

@@ -171,6 +171,12 @@ defmodule TemplatePhoenixWeb.UserLive.LoginTest do
       refute has_element?(view, "#passkey-login-button")
     end
 
+    test "webauthn:error without a name is answered generically", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/users/log-in")
+      render_hook(view, "webauthn:error", %{"unexpected" => 1})
+      assert has_element?(view, "#flash-error", "Something went wrong")
+    end
+
     test "double-submitting the same assertion payload issues no second token",
          %{conn: conn, user: user, passkey: passkey} do
       {:ok, view, _html} = live(conn, ~p"/users/log-in")

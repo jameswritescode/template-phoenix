@@ -216,6 +216,11 @@ defmodule TemplatePhoenixWeb.UserLive.Login do
     {:noreply, put_flash(socket, :error, message)}
   end
 
+  def handle_event("webauthn:error", _params, socket) do
+    {:noreply,
+     put_flash(socket, :error, "Something went wrong with the passkey prompt. Try again.")}
+  end
+
   def handle_event("submit_magic", %{"user" => %{"email" => email}}, socket) do
     if user = Accounts.get_user_by_email(email) do
       Accounts.deliver_login_instructions(
