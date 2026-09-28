@@ -1,7 +1,9 @@
 defmodule TemplatePhoenixWeb.Router do
   use TemplatePhoenixWeb, :router
 
+  # auth:begin — removed by bin/remove-auth.sh
   import TemplatePhoenixWeb.UserAuth
+  # auth:end
 
   pipeline :browser do
     plug :accepts, ["html"]
@@ -10,7 +12,9 @@ defmodule TemplatePhoenixWeb.Router do
     plug :put_root_layout, html: {TemplatePhoenixWeb.Layouts, :root}
     plug :protect_from_forgery
     plug :put_secure_browser_headers
+    # auth:begin
     plug :fetch_current_scope_for_user
+    # auth:end
   end
 
   pipeline :api do
@@ -50,6 +54,7 @@ defmodule TemplatePhoenixWeb.Router do
     end
   end
 
+  # auth:begin
   ## Authentication routes
 
   scope "/", TemplatePhoenixWeb do
@@ -77,4 +82,6 @@ defmodule TemplatePhoenixWeb.Router do
     post "/users/log-in", UserSessionController, :create
     delete "/users/log-out", UserSessionController, :delete
   end
+
+  # auth:end
 end
