@@ -27,9 +27,12 @@ defmodule TemplatePhoenix.Accounts.Passkeys do
 
   import Ecto.Query
 
+  require Logger
+
   alias TemplatePhoenix.Accounts.Scope
   alias TemplatePhoenix.Accounts.User
   alias TemplatePhoenix.Accounts.UserPasskey
+  alias TemplatePhoenix.Accounts.UserToken
   alias TemplatePhoenix.Accounts.WebAuthn
   alias TemplatePhoenix.Repo
 
@@ -187,5 +190,166 @@ defmodule TemplatePhoenix.Accounts.Passkeys do
       %{count: 1},
       metadata
     )
+  end
+
+  ## Authentication
+
+  @spec new_authentication_challenge_for_user(User.t()) :: {Wax.Challenge.t(), [binary()]}
+  def new_authentication_challenge_for_user(%User{id: user_id}) do
+    credentials =
+      Repo.all(
+        from p in UserPasskey,
+          where: p.user_id == ^user_id,
+          select: {p.credential_id, p.public_key}
+      )
+
+    challenge =
+      WebAuthn.impl().new_authentication_challenge(
+        Keyword.put(WebAuthn.ceremony_opts(), :allow_credentials, credentials)
+      )
+
+    {challenge, Enum.map(credentials, &elem(&1, 0))}
+  end
+
+  @spec new_discoverable_authentication_challenge() :: Wax.Challenge.t()
+  def new_discoverable_authentication_challenge do
+    WebAuthn.impl().new_authentication_challenge(WebAuthn.ceremony_opts())
+  end
+
+  @spec verify_assertion_and_issue_login_token(Wax.Challenge.t(), map()) ::
+          {:ok, User.t(), String.t()} | {:error, :invalid_payload | :verification_failed}
+  def verify_assertion_and_issue_login_token(%Wax.Challenge{} = challenge, payload) do
+    with {:ok, credential_id} <- decode_field(payload, "credential_id"),
+         {:ok, user_handle} <- decode_field(payload, "user_handle"),
+         {:ok, passkey, user} <- fetch_passkey_globally(credential_id),
+         :ok <- check_user_handle(user, user_handle),
+         {:ok, auth_data} <- run_assertion(passkey, challenge, payload),
+         :ok <- check_and_bump_sign_count(passkey, auth_data.sign_count) do
+      finish_assertion(user, passkey, "discoverable")
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec verify_second_factor_and_issue_login_token(User.t(), Wax.Challenge.t(), map()) ::
+          {:ok, User.t(), String.t()} | {:error, :invalid_payload | :verification_failed}
+  def verify_second_factor_and_issue_login_token(
+        %User{} = user,
+        %Wax.Challenge{} = challenge,
+        payload
+      ) do
+    with {:ok, credential_id} <- decode_field(payload, "credential_id"),
+         {:ok, passkey} <- fetch_passkey_for_user(user, credential_id),
+         {:ok, auth_data} <- run_assertion(passkey, challenge, payload),
+         :ok <- check_and_bump_sign_count(passkey, auth_data.sign_count) do
+      finish_assertion(user, passkey, "second_factor")
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  @spec client_authentication_options(Wax.Challenge.t(), [binary()]) :: map()
+  def client_authentication_options(%Wax.Challenge{} = challenge, allow_credential_ids) do
+    base = %{
+      challenge: Base.url_encode64(challenge.bytes, padding: false),
+      rpId: challenge.rp_id,
+      userVerification: "required",
+      timeout: 120_000
+    }
+
+    case allow_credential_ids do
+      [] -> base
+      ids -> Map.put(base, :allowCredentials, Enum.map(ids, &credential_descriptor/1))
+    end
+  end
+
+  ## Assertion helpers (private)
+
+  defp fetch_passkey_globally(credential_id) do
+    case Repo.one(
+           from p in UserPasskey,
+             where: p.credential_id == ^credential_id,
+             preload: :user
+         ) do
+      %UserPasskey{user: %User{} = user} = passkey -> {:ok, passkey, user}
+      nil -> verification_failed(:unknown_credential)
+    end
+  end
+
+  defp fetch_passkey_for_user(%User{id: user_id}, credential_id) do
+    case Repo.one(
+           from p in UserPasskey,
+             where: p.user_id == ^user_id and p.credential_id == ^credential_id
+         ) do
+      %UserPasskey{} = passkey -> {:ok, passkey}
+      nil -> verification_failed(:credential_not_owned)
+    end
+  end
+
+  defp check_user_handle(%User{webauthn_user_handle: handle}, handle) when is_binary(handle),
+    do: :ok
+
+  defp check_user_handle(_user, _handle), do: verification_failed(:user_handle_mismatch)
+
+  defp run_assertion(%UserPasskey{} = passkey, challenge, payload) do
+    with {:ok, authenticator_data} <- decode_field(payload, "authenticator_data"),
+         {:ok, signature} <- decode_field(payload, "signature"),
+         {:ok, client_data_json} <- decode_field(payload, "client_data_json") do
+      case WebAuthn.impl().authenticate(
+             passkey.credential_id,
+             authenticator_data,
+             signature,
+             client_data_json,
+             challenge,
+             [{passkey.credential_id, passkey.public_key}]
+           ) do
+        {:ok, auth_data} -> {:ok, auth_data}
+        {:error, error} -> verification_failed({:wax, inspect(error)})
+      end
+    end
+  end
+
+  defp check_and_bump_sign_count(%UserPasskey{sign_count: 0}, 0), do: :ok
+
+  defp check_and_bump_sign_count(%UserPasskey{sign_count: stored} = passkey, received)
+       when received > stored do
+    {updated, _} =
+      Repo.update_all(
+        from(p in UserPasskey, where: p.id == ^passkey.id and p.sign_count == ^stored),
+        set: [sign_count: received]
+      )
+
+    if updated == 1, do: :ok, else: sign_count_regression(passkey, received)
+  end
+
+  defp check_and_bump_sign_count(%UserPasskey{} = passkey, received),
+    do: sign_count_regression(passkey, received)
+
+  defp sign_count_regression(passkey, received) do
+    emit([:passkey, :sign_count_regression], %{
+      user_id: passkey.user_id,
+      passkey_id: passkey.id,
+      stored: passkey.sign_count,
+      received: received
+    })
+
+    Logger.warning(
+      "passkey sign count regression user_id=#{passkey.user_id} passkey_id=#{passkey.id} " <>
+        "stored=#{passkey.sign_count} received=#{received}"
+    )
+
+    {:error, :verification_failed}
+  end
+
+  defp finish_assertion(user, passkey, tag) do
+    Repo.update_all(
+      from(p in UserPasskey, where: p.id == ^passkey.id),
+      set: [last_used_at: DateTime.utc_now(:second)]
+    )
+
+    {encoded, token} = UserToken.build_passkey_token(user, "webauthn-login", tag)
+    Repo.insert!(token)
+    emit([:passkey, :asserted], %{user_id: user.id, passkey_id: passkey.id, context: tag})
+    {:ok, user, encoded}
   end
 end
