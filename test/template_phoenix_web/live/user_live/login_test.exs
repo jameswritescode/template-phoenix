@@ -12,6 +12,12 @@ defmodule TemplatePhoenixWeb.UserLive.LoginTest do
       assert html =~ "Sign up"
       assert html =~ "Log in with email"
     end
+
+    test "navbar shows log-in links when signed out", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/users/log-in")
+      assert has_element?(view, "#user-menu-log-in")
+      refute has_element?(view, "#user-menu-log-out")
+    end
   end
 
   describe "user login - magic link" do
