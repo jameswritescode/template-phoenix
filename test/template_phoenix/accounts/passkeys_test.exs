@@ -420,4 +420,35 @@ defmodule TemplatePhoenix.Accounts.PasskeysTest do
                Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
     end
   end
+
+  describe "management" do
+    setup do
+      user = user_fixture()
+      %{user: user, scope: Scope.for_user(user), passkey: user_passkey_fixture(user)}
+    end
+
+    test "list/rename/delete are scoped to the owner", %{scope: scope, passkey: passkey} do
+      other_scope = Scope.for_user(user_fixture())
+
+      assert [%UserPasskey{id: id}] = Passkeys.list_passkeys(scope)
+      assert id == passkey.id
+      assert Passkeys.list_passkeys(other_scope) == []
+
+      assert_raise Ecto.NoResultsError, fn -> Passkeys.get_passkey!(other_scope, passkey.id) end
+      assert_raise Ecto.NoResultsError, fn -> Passkeys.delete_passkey(other_scope, passkey.id) end
+    end
+
+    test "rename validates and persists", %{scope: scope, passkey: passkey} do
+      assert {:error, %Ecto.Changeset{}} = Passkeys.rename_passkey(scope, passkey.id, "")
+      assert {:ok, renamed} = Passkeys.rename_passkey(scope, passkey.id, "Yubikey 5C")
+      assert renamed.name == "Yubikey 5C"
+    end
+
+    test "delete reports how many passkeys remain", %{user: user, scope: scope, passkey: passkey} do
+      second = user_passkey_fixture(user)
+      assert {:ok, _deleted, 1} = Passkeys.delete_passkey(scope, passkey.id)
+      assert {:ok, _deleted, 0} = Passkeys.delete_passkey(scope, second.id)
+      refute Passkeys.passkeys_enabled?(user)
+    end
+  end
 end

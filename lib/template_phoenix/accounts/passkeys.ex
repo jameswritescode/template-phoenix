@@ -354,4 +354,42 @@ defmodule TemplatePhoenix.Accounts.Passkeys do
     emit([:passkey, :asserted], %{user_id: user.id, passkey_id: passkey.id, context: tag})
     {:ok, user, encoded}
   end
+
+  ## Management
+
+  @spec list_passkeys(Scope.t()) :: [UserPasskey.t()]
+  def list_passkeys(%Scope{user: %User{id: user_id}}) do
+    Repo.all(from p in UserPasskey, where: p.user_id == ^user_id, order_by: [desc: p.inserted_at])
+  end
+
+  @spec get_passkey!(Scope.t(), pos_integer() | String.t()) :: UserPasskey.t()
+  def get_passkey!(%Scope{user: %User{id: user_id}}, id) do
+    Repo.one!(from p in UserPasskey, where: p.user_id == ^user_id and p.id == ^id)
+  end
+
+  @spec rename_passkey(Scope.t(), pos_integer() | String.t(), String.t()) ::
+          {:ok, UserPasskey.t()} | {:error, Ecto.Changeset.t()}
+  def rename_passkey(%Scope{} = scope, id, name) do
+    scope
+    |> get_passkey!(id)
+    |> UserPasskey.rename_changeset(%{"name" => name})
+    |> Repo.update()
+    |> tap(fn
+      {:ok, passkey} ->
+        emit([:passkey, :renamed], %{user_id: passkey.user_id, passkey_id: passkey.id})
+
+      _error ->
+        :ok
+    end)
+  end
+
+  @spec delete_passkey(Scope.t(), pos_integer() | String.t()) ::
+          {:ok, UserPasskey.t(), non_neg_integer()}
+  def delete_passkey(%Scope{user: %User{id: user_id}} = scope, id) do
+    passkey = get_passkey!(scope, id)
+    {:ok, deleted} = Repo.delete(passkey)
+    remaining = Repo.aggregate(from(p in UserPasskey, where: p.user_id == ^user_id), :count)
+    emit([:passkey, :deleted], %{user_id: user_id, passkey_id: deleted.id, remaining: remaining})
+    {:ok, deleted, remaining}
+  end
 end
