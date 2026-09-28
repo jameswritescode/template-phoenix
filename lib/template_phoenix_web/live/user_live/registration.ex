@@ -1,4 +1,6 @@
 defmodule TemplatePhoenixWeb.UserLive.Registration do
+  @moduledoc "Registration page: creates an account and emails a magic log-in link."
+
   use TemplatePhoenixWeb, :live_view
 
   alias TemplatePhoenix.Accounts

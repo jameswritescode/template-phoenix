@@ -1,4 +1,6 @@
 defmodule TemplatePhoenixWeb.UserLive.Confirmation do
+  @moduledoc "Magic-link landing page that confirms the account and/or logs the user in."
+
   use TemplatePhoenixWeb, :live_view
 
   alias TemplatePhoenix.Accounts

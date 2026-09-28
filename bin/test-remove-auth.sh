@@ -67,9 +67,9 @@ grep -q 'get "/", PageController, :home' lib/template_phoenix_web/router.ex \
 if grep -qE 'live_session|UserAuth|fetch_current_scope' lib/template_phoenix_web/router.ex; then
   fail "Router still references auth"
 fi
-# Both are forward-compatible absence checks: neither the remove-auth CI job
-# nor the remove-auth skill symlink exists yet (a later task adds them), so
-# these are trivially true today and stay correct once that task lands.
+# The remove-auth CI job and skill symlink only make sense while auth exists;
+# both must be gone from the stripped app (the job is marker-wrapped in ci.yml,
+# the symlink is in the script's delete list).
 grep -q 'remove-auth:' .github/workflows/ci.yml && fail "CI still has the remove-auth job"
 [ -e .claude/skills/remove-auth ] && fail "remove-auth skill symlink should not exist"
 [ -L CLAUDE.md ] || fail "CLAUDE.md symlink lost"
