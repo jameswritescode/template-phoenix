@@ -17,8 +17,6 @@ defmodule TemplatePhoenixWeb.ConnCase do
 
   use ExUnit.CaseTemplate
 
-  alias TemplatePhoenix.Accounts.Scope
-
   using do
     quote do
       # The default endpoint for testing
@@ -39,6 +37,8 @@ defmodule TemplatePhoenixWeb.ConnCase do
   end
 
   # auth:begin — removed by bin/remove-auth.sh
+  alias TemplatePhoenix.Accounts.Scope
+
   @doc """
   Setup helper that registers and logs in users.
 
