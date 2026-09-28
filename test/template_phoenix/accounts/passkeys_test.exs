@@ -591,6 +591,28 @@ defmodule TemplatePhoenix.Accounts.PasskeysTest do
       end
     end
 
+    # The gate-bypassing session mints: `do_log_in_user/3` is private to
+    # `UserAuth`, and its only public doorway past the second-factor gate,
+    # `log_in_user_after_webauthn/3`, has exactly one caller — the
+    # controller action that has just consumed a webauthn completion token.
+    test "session mints that bypass the second-factor gate have no stray call sites" do
+      user_auth = "lib/template_phoenix_web/user_auth.ex"
+      controller = "lib/template_phoenix_web/controllers/user_session_controller.ex"
+
+      for path <- lib_files(), path not in [user_auth, controller] do
+        source = File.read!(path)
+
+        refute source =~ "log_in_user_after_webauthn(",
+               "#{path}: unexpected log_in_user_after_webauthn/3 call"
+
+        refute source =~ "do_log_in_user(", "#{path}: unexpected do_log_in_user/3 call"
+      end
+
+      controller_source = File.read!(controller)
+      refute controller_source =~ "do_log_in_user("
+      assert length(String.split(controller_source, "log_in_user_after_webauthn(")) == 2
+    end
+
     @spec lib_files() :: [Path.t()]
     defp lib_files do
       "lib/**/*.ex" |> Path.wildcard() |> Enum.filter(&File.regular?/1)

@@ -31,6 +31,8 @@ defmodule TemplatePhoenixWeb.UserAuth do
   # the reissuing of tokens completely.
   @session_reissue_age_in_days 7
 
+  @sudo_window_minutes -10
+
   @doc """
   Logs the user in after a verified first factor (password or magic link).
 
@@ -49,24 +51,28 @@ defmodule TemplatePhoenixWeb.UserAuth do
       not Passkeys.passkeys_enabled?(user) ->
         do_log_in_user(conn, user, params)
 
-      sudo_fresh_same_user?(conn, user) ->
+      scope_user = sudo_fresh_same_user(conn, user) ->
         # Narrow owner-approved carve-out: this conn is already fully
         # authenticated as this user with a sudo-fresh ceremony — e.g. the
         # password-change re-mint seconds after sudo demanded a passkey.
-        do_log_in_user(conn, user, params)
+        # The re-mint carries the ORIGINAL ceremony time so a first-factor
+        # re-auth can never extend sudo; only a passkey ceremony does.
+        do_log_in_user(conn, %{user | authenticated_at: scope_user.authenticated_at}, params)
 
       true ->
         redirect_to_second_factor(conn, user, params)
     end
   end
 
-  defp sudo_fresh_same_user?(conn, user) do
+  # Uses the require_sudo_mode gate's own 10-minute window: a session that
+  # could not pass that gate must take the ceremony detour, not this path.
+  defp sudo_fresh_same_user(conn, user) do
     case conn.assigns[:current_scope] do
       %Scope{user: %Accounts.User{id: id} = scope_user} when id == user.id ->
-        Accounts.sudo_mode?(scope_user)
+        if Accounts.sudo_mode?(scope_user, @sudo_window_minutes), do: scope_user
 
       _other ->
-        false
+        nil
     end
   end
 
@@ -342,7 +348,7 @@ defmodule TemplatePhoenixWeb.UserAuth do
   def on_mount(:require_sudo_mode, _params, session, socket) do
     socket = mount_current_scope(socket, session)
 
-    if Accounts.sudo_mode?(socket.assigns.current_scope.user, -10) do
+    if Accounts.sudo_mode?(socket.assigns.current_scope.user, @sudo_window_minutes) do
       {:cont, socket}
     else
       socket =

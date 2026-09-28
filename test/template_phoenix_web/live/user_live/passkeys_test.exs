@@ -37,6 +37,60 @@ defmodule TemplatePhoenixWeb.UserLive.PasskeysTest do
              live(conn, ~p"/users/settings/passkeys")
   end
 
+  describe "sudo goes stale while the view is open" do
+    test "add redirects to re-auth and pushes no challenge", %{conn: conn} do
+      {:ok, view, _html} = live(conn, ~p"/users/settings/passkeys")
+      stale_session(conn)
+
+      assert {:error, {:redirect, %{to: "/users/log-in"}}} =
+               view |> element("#add-passkey") |> render_click()
+
+      refute_push_event(view, "webauthn:register", _)
+    end
+
+    test "completing a registration started while fresh creates no passkey",
+         %{conn: conn, user: user} do
+      {:ok, view, _html} = live(conn, ~p"/users/settings/passkeys")
+      view |> element("#add-passkey") |> render_click()
+      assert_push_event(view, "webauthn:register", %{challenge: _})
+      stale_session(conn)
+
+      assert {:error, {:redirect, %{to: "/users/log-in"}}} =
+               render_hook(view, "webauthn:registered", webauthn_registration_payload("stale"))
+
+      refute Passkeys.passkeys_enabled?(user)
+    end
+
+    test "rename and delete leave the passkey untouched", %{conn: conn, user: user} do
+      passkey = user_passkey_fixture(user)
+
+      {:ok, view, _html} = live(conn, ~p"/users/settings/passkeys")
+      stale_session(conn)
+
+      assert {:error, {:redirect, %{to: "/users/log-in"}}} =
+               view
+               |> form("#rename-passkey-#{passkey.id}", %{"passkey" => %{"name" => "Renamed"}})
+               |> render_submit()
+
+      conn = log_in_user(build_conn(), user)
+      {:ok, view, _html} = live(conn, ~p"/users/settings/passkeys")
+      stale_session(conn)
+
+      assert {:error, {:redirect, %{to: "/users/log-in"}}} =
+               view |> element("#delete-passkey-#{passkey.id}") |> render_click()
+
+      assert [%{name: name}] = Passkeys.list_passkeys(Scope.for_user(user))
+      assert name == passkey.name
+    end
+  end
+
+  defp stale_session(conn) do
+    override_token_authenticated_at(
+      Plug.Conn.get_session(conn, :user_token),
+      DateTime.add(DateTime.utc_now(:second), -2, :hour)
+    )
+  end
+
   test "adds a passkey via the hook round-trip", %{conn: conn, user: user} do
     {:ok, view, _html} = live(conn, ~p"/users/settings/passkeys")
 
