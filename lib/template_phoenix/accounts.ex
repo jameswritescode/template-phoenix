@@ -302,6 +302,90 @@ defmodule TemplatePhoenix.Accounts do
     :ok
   end
 
+  ## Passkey flow tokens
+
+  @doc """
+  Generates a pending second-factor token for `user`, deleting any prior
+  pending token for that user first (10-minute TTL).
+  """
+  @spec generate_pending_second_factor_token(User.t()) :: String.t()
+  def generate_pending_second_factor_token(user) do
+    Repo.delete_all(
+      from(t in UserToken, where: t.user_id == ^user.id and t.context == "passkey-2fa")
+    )
+
+    {encoded, token} = UserToken.build_passkey_token(user, "passkey-2fa", nil)
+    Repo.insert!(token)
+    encoded
+  end
+
+  @doc """
+  Gets the user for a pending second-factor token, if it is still valid.
+  Reading does not consume the token.
+  """
+  @spec get_user_by_pending_second_factor_token(String.t()) :: User.t() | nil
+  def get_user_by_pending_second_factor_token(encoded) when is_binary(encoded) do
+    with {:ok, query} <- UserToken.verify_passkey_token_query(encoded, "passkey-2fa"),
+         {user, _token} <- Repo.one(query) do
+      user
+    else
+      _invalid -> nil
+    end
+  end
+
+  def get_user_by_pending_second_factor_token(_other), do: nil
+
+  @doc """
+  Deletes a pending second-factor token, if any. Always returns `:ok`.
+  """
+  @spec delete_pending_second_factor_token(String.t()) :: :ok
+  def delete_pending_second_factor_token(encoded) when is_binary(encoded) do
+    case Base.url_decode64(encoded, padding: false) do
+      {:ok, decoded} ->
+        hashed = :crypto.hash(:sha256, decoded)
+
+        Repo.delete_all(
+          from(t in UserToken, where: t.token == ^hashed and t.context == "passkey-2fa")
+        )
+
+        :ok
+
+      :error ->
+        :ok
+    end
+  end
+
+  def delete_pending_second_factor_token(_other), do: :ok
+
+  @doc """
+  Atomically consumes a webauthn-login token (2-minute TTL), returning the
+  user and the tag recorded at issuance ("second_factor" or "discoverable").
+  Single-use: the row is deleted in the same query that matches it.
+  """
+  @spec consume_webauthn_login_token(String.t()) :: {:ok, User.t(), String.t()} | :error
+  def consume_webauthn_login_token(encoded) when is_binary(encoded) do
+    case Base.url_decode64(encoded, padding: false) do
+      {:ok, decoded} ->
+        hashed = :crypto.hash(:sha256, decoded)
+
+        delete_query =
+          from t in UserToken,
+            where: t.token == ^hashed and t.context == "webauthn-login",
+            where: t.inserted_at > ago(2, "minute"),
+            select: %{user_id: t.user_id, sent_to: t.sent_to}
+
+        case Repo.delete_all(delete_query) do
+          {1, [%{user_id: user_id, sent_to: method}]} -> {:ok, Repo.get!(User, user_id), method}
+          _none -> :error
+        end
+
+      :error ->
+        :error
+    end
+  end
+
+  def consume_webauthn_login_token(_other), do: :error
+
   ## Token helper
 
   defp update_user_and_delete_all_tokens(changeset) do

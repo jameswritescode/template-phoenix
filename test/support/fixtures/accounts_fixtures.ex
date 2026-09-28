@@ -104,6 +104,29 @@ defmodule TemplatePhoenix.AccountsFixtures do
     )
   end
 
+  @spec backdate_tokens(User.t(), String.t(), keyword()) :: :ok
+  def backdate_tokens(user, context, minutes: minutes) do
+    shifted = DateTime.add(DateTime.utc_now(:second), minutes * 60, :second)
+
+    TemplatePhoenix.Repo.update_all(
+      from(t in Accounts.UserToken,
+        where: t.user_id == ^user.id and t.context == ^context
+      ),
+      set: [inserted_at: shifted]
+    )
+
+    :ok
+  end
+
+  @spec issue_webauthn_login_token(User.t(), String.t()) :: String.t()
+  def issue_webauthn_login_token(user, tag) do
+    {encoded, token} =
+      Accounts.UserToken.build_passkey_token(user, "webauthn-login", tag)
+
+    TemplatePhoenix.Repo.insert!(token)
+    encoded
+  end
+
   @spec user_passkey_fixture(User.t(), keyword()) :: UserPasskey.t()
   def user_passkey_fixture(user, opts \\ []) do
     %UserPasskey{
