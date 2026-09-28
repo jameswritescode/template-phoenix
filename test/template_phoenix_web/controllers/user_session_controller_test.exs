@@ -428,6 +428,24 @@ defmodule TemplatePhoenixWeb.UserSessionControllerTest do
                        %{result: :success, method: "password"}}
     end
 
+    test "an attacker-supplied _login_method param cannot poison the tag", %{conn: conn} do
+      user = user_fixture() |> set_password()
+
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [[:template_phoenix, :accounts, :login]])
+
+      post(conn, ~p"/users/log-in", %{
+        "user" => %{
+          "email" => user.email,
+          "password" => valid_user_password(),
+          "_login_method" => "passkey_discoverable"
+        }
+      })
+
+      assert_received {[:template_phoenix, :accounts, :login], ^ref, %{count: 1},
+                       %{result: :success, method: "password"}}
+    end
+
     test "magic-link login is tagged magic_link", %{conn: conn} do
       user = user_fixture()
       {token, _hashed_token} = generate_user_magic_link_token(user)
