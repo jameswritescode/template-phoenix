@@ -2,6 +2,9 @@ defmodule TemplatePhoenixWeb.UserLive.Login do
   use TemplatePhoenixWeb, :live_view
 
   alias TemplatePhoenix.Accounts
+  alias TemplatePhoenix.Accounts.Passkeys
+  alias TemplatePhoenix.Accounts.Scope
+  alias TemplatePhoenix.Accounts.User
 
   @impl true
   def render(assigns) do
@@ -33,6 +36,30 @@ defmodule TemplatePhoenixWeb.UserLive.Login do
               To see sent emails, visit <.link href="/dev/mailbox" class="underline">the mailbox page</.link>.
             </p>
           </div>
+        </div>
+
+        <div id="passkey-login" phx-hook="Passkey">
+          <.button
+            :if={@webauthn_supported}
+            id="passkey-login-button"
+            phx-click="passkey_login"
+            class="btn btn-primary w-full"
+          >
+            <.icon name="hero-finger-print" class="size-5" /> Sign in with a passkey
+          </.button>
+
+          <.form
+            for={@passkey_form}
+            id="passkey-complete-form"
+            action={~p"/users/log-in/passkey"}
+            method="post"
+            phx-trigger-action={@trigger_passkey_submit}
+          >
+            <input type="hidden" name="user[token]" value={@passkey_login_token} />
+            <input type="hidden" name="user[remember_me]" value="false" />
+          </.form>
+
+          <div class="divider">or</div>
         </div>
 
         <.form
@@ -103,12 +130,90 @@ defmodule TemplatePhoenixWeb.UserLive.Login do
 
     form = to_form(%{"email" => email}, as: "user")
 
-    {:ok, assign(socket, form: form, trigger_submit: false)}
+    {:ok,
+     socket
+     |> assign(form: form, trigger_submit: false)
+     |> assign(:webauthn_supported, true)
+     |> assign(:passkey_challenge, nil)
+     |> assign(:passkey_login_token, nil)
+     |> assign(:trigger_passkey_submit, false)
+     |> assign(:passkey_form, to_form(%{}, as: "user"))}
   end
 
   @impl true
   def handle_event("submit_password", _params, socket) do
     {:noreply, assign(socket, :trigger_submit, true)}
+  end
+
+  def handle_event("passkey_login", _params, socket) do
+    {challenge, options} =
+      case socket.assigns.current_scope do
+        %Scope{user: %User{} = user} ->
+          {challenge, allow_ids} = Passkeys.new_authentication_challenge_for_user(user)
+          {challenge, Passkeys.client_authentication_options(challenge, allow_ids)}
+
+        _anonymous ->
+          challenge = Passkeys.new_discoverable_authentication_challenge()
+          {challenge, Passkeys.client_authentication_options(challenge, [])}
+      end
+
+    {:noreply,
+     socket
+     |> assign(:passkey_challenge, challenge)
+     |> push_event("webauthn:authenticate", options)}
+  end
+
+  def handle_event("webauthn:asserted", payload, socket) do
+    # The challenge is discarded before calling any verify function — on
+    # every outcome — per the Passkeys module's single-use contract: it
+    # cannot make the challenge itself single-use, so the caller must.
+    challenge = socket.assigns.passkey_challenge
+    socket = assign(socket, :passkey_challenge, nil)
+
+    result =
+      case {challenge, socket.assigns.current_scope} do
+        {nil, _scope} ->
+          {:error, :verification_failed}
+
+        {challenge, %Scope{user: %User{} = user}} ->
+          Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
+
+        {challenge, _anonymous} ->
+          Passkeys.verify_assertion_and_issue_login_token(challenge, payload)
+      end
+
+    case result do
+      {:ok, _user, login_token} ->
+        {:noreply,
+         socket
+         |> assign(:passkey_login_token, login_token)
+         |> assign(:trigger_passkey_submit, true)}
+
+      {:error, :invalid_payload} ->
+        {:noreply,
+         put_flash(
+           socket,
+           :error,
+           "That passkey couldn't be used here — use email and password, then your passkey."
+         )}
+
+      {:error, _reason} ->
+        {:noreply, put_flash(socket, :error, "We couldn't verify that passkey. Try again.")}
+    end
+  end
+
+  def handle_event("webauthn:unsupported", _params, socket) do
+    {:noreply, assign(socket, :webauthn_supported, false)}
+  end
+
+  def handle_event("webauthn:error", %{"name" => name}, socket) do
+    message =
+      case name do
+        "NotAllowedError" -> "Cancelled or timed out — try again."
+        _other -> "Something went wrong with the passkey prompt. Try again."
+      end
+
+    {:noreply, put_flash(socket, :error, message)}
   end
 
   def handle_event("submit_magic", %{"user" => %{"email" => email}}, socket) do

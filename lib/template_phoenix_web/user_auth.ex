@@ -37,7 +37,30 @@ defmodule TemplatePhoenixWeb.UserAuth do
   or falls back to the `signed_in_path/1`.
   """
   @spec log_in_user(Plug.Conn.t(), Accounts.User.t(), map()) :: Plug.Conn.t()
-  def log_in_user(conn, user, params \\ %{}) do
+  def log_in_user(conn, user, params \\ %{}), do: do_log_in_user(conn, user, params)
+
+  @doc """
+  Completes a login whose WebAuthn assertion has just been verified.
+
+  Precondition: the caller consumed a single-use webauthn completion token
+  for `user` (see `Accounts.consume_webauthn_login_token/1`) in this
+  request. This is the ONLY public entry that mints a session without
+  passing the second-factor gate — the consumed token IS the second factor
+  (or, for discoverable logins, both factors).
+  """
+  @spec log_in_user_after_webauthn(Plug.Conn.t(), Accounts.User.t(), map()) :: Plug.Conn.t()
+  def log_in_user_after_webauthn(conn, user, params \\ %{}) do
+    if pending = get_session(conn, :passkey_2fa_token) do
+      Accounts.delete_pending_second_factor_token(pending)
+    end
+
+    conn
+    |> delete_session(:passkey_2fa_token)
+    |> delete_session(:passkey_2fa_remember_me)
+    |> do_log_in_user(user, params)
+  end
+
+  defp do_log_in_user(conn, user, params) do
     user_return_to = get_session(conn, :user_return_to)
 
     conn

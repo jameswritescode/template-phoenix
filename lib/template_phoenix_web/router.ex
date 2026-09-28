@@ -81,6 +81,7 @@ defmodule TemplatePhoenixWeb.Router do
     end
 
     post "/users/log-in", UserSessionController, :create
+    post "/users/log-in/passkey", UserSessionController, :create_passkey
     delete "/users/log-out", UserSessionController, :delete
   end
 

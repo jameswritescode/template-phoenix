@@ -129,6 +129,61 @@ defmodule TemplatePhoenixWeb.UserSessionControllerTest do
     end
   end
 
+  describe "POST /users/log-in/passkey" do
+    setup do
+      user = user_fixture()
+      %{user: user, passkey: user_passkey_fixture(user)}
+    end
+
+    test "valid completion token mints a session and honors return_to", %{conn: conn, user: user} do
+      token = issue_webauthn_login_token(user, "discoverable")
+
+      conn =
+        conn
+        |> init_test_session(user_return_to: "/users/settings")
+        |> post(~p"/users/log-in/passkey", %{
+          "user" => %{"token" => token, "remember_me" => "true"}
+        })
+
+      assert get_session(conn, :user_token)
+      assert redirected_to(conn) == "/users/settings"
+      assert conn.resp_cookies["_template_phoenix_web_user_remember_me"]
+    end
+
+    test "a replayed token mints nothing", %{conn: conn, user: user} do
+      token = issue_webauthn_login_token(user, "discoverable")
+      first = post(conn, ~p"/users/log-in/passkey", %{"user" => %{"token" => token}})
+      assert get_session(first, :user_token)
+
+      replay = post(build_conn(), ~p"/users/log-in/passkey", %{"user" => %{"token" => token}})
+      refute get_session(replay, :user_token)
+      assert redirected_to(replay) == ~p"/users/log-in"
+    end
+
+    test "expired and garbage tokens mint nothing", %{user: user} do
+      token = issue_webauthn_login_token(user, "discoverable")
+      backdate_tokens(user, "webauthn-login", minutes: -3)
+
+      for bad <- [token, "garbage"] do
+        conn = post(build_conn(), ~p"/users/log-in/passkey", %{"user" => %{"token" => bad}})
+        refute get_session(conn, :user_token)
+        assert Phoenix.Flash.get(conn.assigns.flash, :error) =~ "couldn't complete"
+      end
+    end
+
+    test "session is renewed at completion (fixation defense)", %{user: user} do
+      token = issue_webauthn_login_token(user, "discoverable")
+
+      conn =
+        build_conn()
+        |> init_test_session(to_be_removed: "attacker-set")
+        |> post(~p"/users/log-in/passkey", %{"user" => %{"token" => token}})
+
+      refute get_session(conn, :to_be_removed)
+      assert get_session(conn, :user_token)
+    end
+  end
+
   describe "DELETE /users/log-out" do
     test "logs the user out", %{conn: conn, user: user} do
       conn = conn |> log_in_user(user) |> delete(~p"/users/log-out")
