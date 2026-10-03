@@ -61,9 +61,11 @@ With your `DB_PARTITION` set:
 
 ## Cleanup — required
 
-- `DB_PARTITION=<name> mise exec -- mix ecto.drop`
-- `MIX_ENV=test MIX_TEST_PARTITION=<name> mise exec -- mix ecto.drop` if you ran tests
-- Leak check: `psql -d postgres -Atc "SELECT datname FROM pg_database WHERE datname LIKE 'template_phoenix_%_%'"`
+- `bin/drop-partition.sh <name>` — drops both the dev and test partition
+  databases (worktrunk's pre-remove hook runs it for you on worktree removal).
+  It refuses an empty name, which would mean the shared databases
+- Leak check (partitions only, never the shared databases):
+  `psql -d postgres -Atc "SELECT datname FROM pg_database WHERE datname ~ '^template_phoenix_(dev|test)_.+'"`
 
 ## SQLite projects (ecto_sqlite3)
 

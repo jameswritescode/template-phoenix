@@ -47,7 +47,8 @@ jobs:
       - run: mix deps.get
 
       # compile --warnings-as-errors, deps.unlock --unused, format,
-      # skills.link --check, credo --strict, dialyzer, test
+      # skills.link --check, shellcheck bin/*.sh, credo --strict, dialyzer,
+      # test (shellcheck comes from mise.toml via mise-action above)
       - run: mix precommit
 
       - name: JS dependencies

@@ -37,6 +37,15 @@ defmodule TemplatePhoenix.MixProject do
   defp elixirc_paths(:test), do: ["lib", "test/support"]
   defp elixirc_paths(_), do: ["lib"]
 
+  # A function alias rather than `cmd shellcheck bin/*.sh`: `mix cmd` does not
+  # run through a shell, so the glob would be passed through unexpanded.
+  defp shellcheck(_args) do
+    {_output, status} =
+      System.cmd("shellcheck", Path.wildcard("bin/*.sh"), into: IO.stream())
+
+    if status != 0, do: Mix.raise("shellcheck found issues in bin/*.sh")
+  end
+
   defp usage_rules do
     [
       file: "AGENTS.md",
@@ -121,6 +130,7 @@ defmodule TemplatePhoenix.MixProject do
         "deps.unlock --unused",
         "format",
         "skills.link --check",
+        &shellcheck/1,
         "credo --strict",
         "dialyzer",
         "test"

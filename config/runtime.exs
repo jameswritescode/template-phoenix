@@ -20,10 +20,29 @@ if System.get_env("PHX_SERVER") do
   config :template_phoenix, TemplatePhoenixWeb.Endpoint, server: true
 end
 
-config :template_phoenix, TemplatePhoenixWeb.Endpoint,
-  http: [port: String.to_integer(System.get_env("PORT", "4000"))]
+port =
+  case System.get_env("PORT") do
+    empty when empty in [nil, ""] -> 4000
+    port -> String.to_integer(port)
+  end
+
+config :template_phoenix, TemplatePhoenixWeb.Endpoint, http: [port: port]
 
 if config_env() == :dev do
+  # URL host lives here rather than in dev.exs because `mix server` resolves
+  # --subdomain into PHX_HOST at task run time: dev.exs is evaluated when Mix
+  # boots, before the task runs, while this file is evaluated at app start.
+  # Explicit PHX_HOST wins; a SUBDOMAIN pin (see .config/wt.toml) implies
+  # <subdomain>.localhost; otherwise plain localhost.
+  host =
+    case {System.get_env("PHX_HOST"), System.get_env("SUBDOMAIN")} do
+      {host, _} when host not in [nil, ""] -> host
+      {_, sub} when sub not in [nil, ""] -> sub <> ".localhost"
+      _ -> "localhost"
+    end
+
+  config :template_phoenix, TemplatePhoenixWeb.Endpoint, url: [host: host]
+
   # Reload browser tabs when matching files change.
   config :template_phoenix, TemplatePhoenixWeb.Endpoint,
     live_reload: [
