@@ -35,8 +35,6 @@ You land in a ready, isolated workspace in seconds.
 
 - If wt reports hooks need approval, stop and ask the user to run
   `wt config approvals add` — never bypass it with `--yes` yourself
-- Finishing: `wt merge` runs the full gate; on removal the pre-remove hook
-  runs `bin/drop-partition.sh` for the branch's partition
 
 ## Fallback: plain git worktree
 
@@ -68,14 +66,5 @@ mise exec -- mix setup   # creates template_phoenix_dev_my_branch
 - Verify user-facing changes with the tophat skill — the worktree's pinned
   `PORT` belongs to the main dev server, so tophat servers scan for a free
   port with `--free-port` (the skill shows the command)
-- Run `mise exec -- mix precommit` (and `pnpm test` for JS changes) before
-  calling the task done
-
-## Finishing without worktrunk
-
-```sh
-bin/drop-partition.sh my_branch   # drops the dev and test partition databases
-git worktree remove <path>
-```
-
-Run the drop first, while the worktree (and its script) still exists.
+- Wrapping up, opening a PR, and tearing down the worktree after merge:
+  follow the finish-a-task skill

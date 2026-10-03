@@ -64,7 +64,8 @@ With your `DB_PARTITION` set:
 - `bin/drop-partition.sh <name>` — drops both the dev and test partition
   databases (worktrunk's pre-remove hook runs it for you on worktree removal).
   It refuses an empty name, which would mean the shared databases
-- Leak check: `psql -d postgres -Atc "SELECT datname FROM pg_database WHERE datname LIKE 'template_phoenix_%_%'"`
+- Leak check (partitions only, never the shared databases):
+  `psql -d postgres -Atc "SELECT datname FROM pg_database WHERE datname ~ '^template_phoenix_(dev|test)_.+'"`
 
 ## SQLite projects (ecto_sqlite3)
 
