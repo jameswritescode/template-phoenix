@@ -118,7 +118,8 @@ exec: `mise exec -- env DB_PARTITION=x mix ecto.drop`.
 Schema-changing or backfill work shouldn't share the main dev database.
 `DB_PARTITION=<name>` suffixes the dev database (`template_phoenix_dev_<name>`)
 for every mix command, e.g. `DB_PARTITION=checkout_backfill mix ecto.setup`.
-Drop it when done: `DB_PARTITION=checkout_backfill mix ecto.drop`.
+Drop it (and its test-database twin) when done:
+`bin/drop-partition.sh checkout_backfill`.
 
 ### Monitoring
 

@@ -8,6 +8,16 @@ description: Use when beginning any development task in this repo — a feature,
 Never work directly in the user's checkout. Every task gets its own worktree
 with pinned env (subdomain, database partitions, port) and warm build caches.
 
+## Every worktree gets its own databases
+
+Each worktree pins `DB_PARTITION` and `MIX_TEST_PARTITION` (in `.env`), so it
+has its own dev database (`template_phoenix_dev_<partition>`) and its own test
+database (`template_phoenix_test_<partition>`). Both lanes below set this up;
+neither is optional. Never point a worktree at the shared `template_phoenix_dev`
+or `template_phoenix_test` — the user's running server and other agents' test
+runs use those. The partition is created on setup and dropped on teardown
+with `bin/drop-partition.sh <partition>`.
+
 ## Preferred: worktrunk
 
 If `wt` is available (`which wt`):
@@ -20,13 +30,13 @@ The pre-start hook (`.config/wt.toml`) does everything: copies `deps/`,
 `_build/` (dialyzer PLTs, asset binaries), `assets/node_modules/`, and `.env`
 from the primary worktree; re-derives the four managed `.env` keys (`PORT`,
 `SUBDOMAIN`, `DB_PARTITION`, `MIX_TEST_PARTITION`) for the branch; runs
-`mix setup` against the warm caches. You land in a ready, isolated workspace
-in seconds.
+`mix setup` against the warm caches, which creates the partition database.
+You land in a ready, isolated workspace in seconds.
 
 - If wt reports hooks need approval, stop and ask the user to run
   `wt config approvals add` — never bypass it with `--yes` yourself
-- Finishing: `wt merge` runs the full gate and, on removal, drops the
-  partition databases automatically
+- Finishing: `wt merge` runs the full gate; on removal the pre-remove hook
+  runs `bin/drop-partition.sh` for the branch's partition
 
 ## Fallback: plain git worktree
 
@@ -42,28 +52,30 @@ cp -Rc <primary>/assets/node_modules assets/
 Copy the primary's `.env` if present, strip any `PORT`, `SUBDOMAIN`,
 `DB_PARTITION`, `MIX_TEST_PARTITION` lines from it, then append fresh pins
 derived from the branch (dashes for the subdomain, snake_case for the
-partitions; omit `PORT` — `mix server` scans for a free one):
+partitions; omit `PORT` — `mix server` scans for a free one). The partition
+pins are what give this worktree its own databases — don't skip them:
 
 ```sh
 printf 'SUBDOMAIN=%s\nDB_PARTITION=%s\nMIX_TEST_PARTITION=%s\n' \
   my-branch my_branch my_branch >> .env
-mise exec -- mix setup
+mise exec -- mix setup   # creates template_phoenix_dev_my_branch
 ```
 
 ## During the task
 
 - Database work follows the database-partition skill's rules (the pins make
   bare mix commands safe here, but its standing rules still apply)
-- Verify user-facing changes with the tophat skill — note the worktree's
-  pinned `PORT`/`SUBDOMAIN` belong to the main dev server, so tophat servers
-  clear the pin and scan (the skill shows the command)
+- Verify user-facing changes with the tophat skill — the worktree's pinned
+  `PORT` belongs to the main dev server, so tophat servers scan for a free
+  port with `--free-port` (the skill shows the command)
 - Run `mise exec -- mix precommit` (and `pnpm test` for JS changes) before
   calling the task done
 
 ## Finishing without worktrunk
 
 ```sh
-mise exec -- env DB_PARTITION=my_branch mix ecto.drop
-mise exec -- env MIX_ENV=test MIX_TEST_PARTITION=my_branch mix ecto.drop
+bin/drop-partition.sh my_branch   # drops the dev and test partition databases
 git worktree remove <path>
 ```
+
+Run the drop first, while the worktree (and its script) still exists.
