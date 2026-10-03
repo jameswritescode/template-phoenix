@@ -13,25 +13,34 @@ Servers already listening (on 4000, 4001, ...) may belong to the user or other
 projects. Do not probe them, read their process info, or restart them. Instead:
 
 ```sh
-mise exec -- mix server --subdomain tophat-<your-task>
+mise exec -- mix server --free-port
 ```
 
-- **Always pass `--subdomain`, and make the name yours**: derive it from what
-  you are tophatting (branch or feature name, e.g. `tophat-checkout-flow`).
-  Never plain `localhost`, never bare `tophat`, and never a subdomain another
-  agent or the user may be using — the subdomain is what isolates your cookies,
-  sessions, and origin from theirs
-- In a worktree, the `.env`-pinned `PORT` and `SUBDOMAIN` belong to the
-  worktree's main dev server — often the user's, already running. Never take
-  them for tophatting: `--free-port` ignores the pin and scans instead:
+- **In a pinned worktree (`SUBDOMAIN` set in `.env`, e.g. via worktrunk), do
+  NOT pass `--subdomain`** — inherit the pin. The app derives its URL host
+  (email links, WebAuthn relying-party ID) from that pin, so a different
+  subdomain would make the server's own generated URLs disagree with the one
+  you are browsing. Your server is distinguished by its scanned port
+- Sharing the pinned subdomain means sharing its cookies: your tophat
+  logins/logouts and the worktree's main dev server see each other's session
+  state (cookies scope to host, not port). Fine for your own worktree; if the
+  user is actively using that dev server, coordinate before signing in/out
+- **Without a `SUBDOMAIN` pin (not using worktrunk), pass
+  `--subdomain tophat-<your-task>`** and make the name yours: derive it from
+  what you are tophatting (branch or feature name, e.g.
+  `tophat-checkout-flow`). Never plain `localhost`, never bare `tophat`, and
+  never a subdomain another agent or the user may be using:
 
   ```sh
   mise exec -- mix server --free-port --subdomain tophat-<your-task>
   ```
 
+- The `.env`-pinned `PORT` always belongs to the worktree's main dev server —
+  often the user's, already running. Never take it: `--free-port` ignores the
+  pin and scans instead
 - Picks the first free port in 4000-4500 automatically and prints
-  `Starting server on http://tophat-<your-task>.localhost:<port>` — parse that
-  URL from the output; no `lsof` surveying needed
+  `Starting server on http://<host>:<port>` — parse that URL from the output;
+  no `lsof` surveying needed
 - A busy port — pinned or otherwise — is **never yours to free**: the scan
   already avoids busy ports; never kill, restart, or stop a process you did
   not start
