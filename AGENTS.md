@@ -73,6 +73,86 @@ custom classes must fully style the input
 - Bias toward **using existing reusable components** (see `core_components.ex`) instead of writing one-off markup
 - When new UI is needed, bias toward **building it as a reusable component** with attrs and slots so it can be shared, rather than duplicating markup across templates
 
+<!-- auth:begin — removed by bin/remove-auth.sh -->
+### Authentication
+
+- Auth lives in `TemplatePhoenix.Accounts` (+ `Accounts.Passkeys`); sessions
+  are minted ONLY in `UserAuth.do_log_in_user/3` — never write `:user_token`
+  to the session anywhere else, and never add a login path that bypasses
+  `UserAuth.log_in_user/3`
+- Accounts with ≥1 passkey require a passkey second factor on EVERY sign-in
+  path; do not weaken this when adding auth-adjacent features
+- Every edit to a pre-auth (shared) file that supports auth must sit inside
+  the auth marker region (see `bin/remove-auth.sh` for the literal syntax),
+  and new auth files must be added to `bin/remove-auth.sh` — `mix test`
+  (marker tripwire) and the remove-auth CI job enforce this
+- To remove auth from a derived project, use the `remove-auth` skill / run
+  `bin/remove-auth.sh` — never hand-delete auth files
+<!-- auth:end -->
+
+<!-- auth:begin — removed by bin/remove-auth.sh -->
+<!-- phoenix-gen-auth-start -->
+## Authentication
+
+- **Always** handle authentication flow at the router level with proper redirects
+- **Always** be mindful of where to place routes. `phx.gen.auth` creates multiple router plugs and `live_session` scopes:
+  - A plug `:fetch_current_scope_for_user` that is included in the default browser pipeline
+  - A plug `:require_authenticated_user` that redirects to the log in page when the user is not authenticated
+  - A `live_session :current_user` scope - for routes that need the current user but don't require authentication, similar to `:fetch_current_scope_for_user`
+  - A `live_session :require_authenticated_user` scope - for routes that require authentication, similar to the plug with the same name
+  - In both cases, a `@current_scope` is assigned to the Plug connection and LiveView socket
+  - There is **no** `redirect_if_user_is_authenticated` plug: pages that should only be shown to unauthenticated users redirect in their own `mount/3` (see `UserLive.Registration`, which redirects via `UserAuth.signed_in_path/1` when `@current_scope.user` is set)
+- **Always let the user know in which router scopes, `live_session`, and pipeline you are placing the route, AND SAY WHY**
+- `phx.gen.auth` assigns the `current_scope` assign - it **does not assign a `current_user` assign**
+- Always pass the assign `current_scope` to context modules as first argument. When performing queries, use `current_scope.user` to filter the query results
+- To derive/access `current_user` in templates, **always use the `@current_scope.user`**, never use **`@current_user`** in templates or LiveViews
+- **Never** duplicate `live_session` names. A `live_session :current_user` can only be defined __once__ in the router, so all routes for the `live_session :current_user`  must be grouped in a single block
+- Anytime you hit `current_scope` errors or the logged in session isn't displaying the right content, **always double check the router and ensure you are using the correct plug and `live_session` as described below**
+
+### Routes that require authentication
+
+LiveViews that require login should **always be placed inside the __existing__ `live_session :require_authenticated_user` block**:
+
+    scope "/", AppWeb do
+      pipe_through [:browser, :require_authenticated_user]
+
+      live_session :require_authenticated_user,
+        on_mount: [{TemplatePhoenixWeb.UserAuth, :require_authenticated}] do
+        # phx.gen.auth generated routes
+        live "/users/settings", UserLive.Settings, :edit
+        live "/users/settings/confirm-email/:token", UserLive.Settings, :confirm_email
+        # our own routes that require logged in user
+        live "/", MyLiveThatRequiresAuth, :index
+      end
+    end
+
+Controller routes must be placed in a scope that sets the `:require_authenticated_user` plug:
+
+    scope "/", AppWeb do
+      pipe_through [:browser, :require_authenticated_user]
+
+      get "/", MyControllerThatRequiresAuth, :index
+    end
+
+### Routes that work with or without authentication
+
+LiveViews that can work with or without authentication, **always use the __existing__ `:current_user` scope**, ie:
+
+    scope "/", MyAppWeb do
+      pipe_through [:browser]
+
+      live_session :current_user,
+        on_mount: [{TemplatePhoenixWeb.UserAuth, :mount_current_scope}] do
+        # our own routes that work with or without authentication
+        live "/", PublicLive
+      end
+    end
+
+Controllers automatically have the `current_scope` available if they use the `:browser` pipeline.
+
+<!-- phoenix-gen-auth-end -->
+<!-- auth:end -->
+
 <!-- usage-rules-start -->
 <!-- phoenix:ecto-start -->
 ## phoenix:ecto usage

@@ -81,7 +81,19 @@ defmodule TemplatePhoenixWeb.Telemetry do
       summary("vm.memory.total", unit: {:byte, :kilobyte}),
       summary("vm.total_run_queue_lengths.total"),
       summary("vm.total_run_queue_lengths.cpu"),
-      summary("vm.total_run_queue_lengths.io")
+      summary("vm.total_run_queue_lengths.io"),
+
+      # auth:begin — removed by bin/remove-auth.sh
+      counter("template_phoenix.accounts.login.count",
+        tags: [:result, :method],
+        description: "Login outcomes by result and method"
+      ),
+      counter("template_phoenix.accounts.passkey.registered.count"),
+      counter("template_phoenix.accounts.passkey.renamed.count"),
+      counter("template_phoenix.accounts.passkey.deleted.count"),
+      counter("template_phoenix.accounts.passkey.verification_failed.count"),
+      counter("template_phoenix.accounts.passkey.sign_count_regression.count")
+      # auth:end
     ]
   end
 

@@ -1,6 +1,10 @@
 defmodule TemplatePhoenixWeb.Router do
   use TemplatePhoenixWeb, :router
 
+  # auth:begin — removed by bin/remove-auth.sh
+  import TemplatePhoenixWeb.UserAuth
+  # auth:end
+
   pipeline :browser do
     plug :accepts, ["html"]
     plug :fetch_session
@@ -8,6 +12,9 @@ defmodule TemplatePhoenixWeb.Router do
     plug :put_root_layout, html: {TemplatePhoenixWeb.Layouts, :root}
     plug :protect_from_forgery
     plug :put_secure_browser_headers
+    # auth:begin
+    plug :fetch_current_scope_for_user
+    # auth:end
   end
 
   pipeline :api do
@@ -46,4 +53,38 @@ defmodule TemplatePhoenixWeb.Router do
       forward "/mailbox", Plug.Swoosh.MailboxPreview
     end
   end
+
+  # auth:begin
+  ## Authentication routes
+
+  scope "/", TemplatePhoenixWeb do
+    pipe_through [:browser, :require_authenticated_user]
+
+    live_session :require_authenticated_user,
+      on_mount: [{TemplatePhoenixWeb.UserAuth, :require_authenticated}] do
+      live "/users/settings", UserLive.Settings, :edit
+      live "/users/settings/confirm-email/:token", UserLive.Settings, :confirm_email
+      live "/users/settings/passkeys", UserLive.Passkeys
+    end
+
+    post "/users/update-password", UserSessionController, :update_password
+  end
+
+  scope "/", TemplatePhoenixWeb do
+    pipe_through [:browser]
+
+    live_session :current_user,
+      on_mount: [{TemplatePhoenixWeb.UserAuth, :mount_current_scope}] do
+      live "/users/register", UserLive.Registration, :new
+      live "/users/log-in", UserLive.Login, :new
+      live "/users/log-in/two-factor", UserLive.TwoFactor, :new
+      live "/users/log-in/:token", UserLive.Confirmation, :new
+    end
+
+    post "/users/log-in", UserSessionController, :create
+    post "/users/log-in/passkey", UserSessionController, :create_passkey
+    delete "/users/log-out", UserSessionController, :delete
+  end
+
+  # auth:end
 end
