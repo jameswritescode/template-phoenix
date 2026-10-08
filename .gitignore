@@ -42,3 +42,8 @@ assets/node_modules/
 # Local environment (mise loads .env via [env] _.file; mise.local.toml is personal overrides)
 .env
 mise.local.toml
+
+# Superpowers working artifacts (design specs, implementation plans) and
+# its fallback worktree directory — session-local, not part of the template.
+/docs/superpowers/
+/.worktrees/
