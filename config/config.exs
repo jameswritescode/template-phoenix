@@ -7,9 +7,29 @@
 # General application configuration
 import Config
 
+# auth:begin — removed by bin/remove-auth.sh
+config :template_phoenix, :scopes,
+  user: [
+    default: true,
+    module: TemplatePhoenix.Accounts.Scope,
+    assign_key: :current_scope,
+    access_path: [:user, :id],
+    schema_key: :user_id,
+    schema_type: :id,
+    schema_table: :users,
+    test_data_fixture: TemplatePhoenix.AccountsFixtures,
+    test_setup_helper: :register_and_log_in_user
+  ]
+
+# auth:end
+
 config :template_phoenix,
   ecto_repos: [TemplatePhoenix.Repo],
   generators: [timestamp_type: :utc_datetime]
+
+# auth:begin — removed by bin/remove-auth.sh
+config :template_phoenix, :webauthn, endpoint: TemplatePhoenixWeb.Endpoint
+# auth:end
 
 # Configure the endpoint
 config :template_phoenix, TemplatePhoenixWeb.Endpoint,

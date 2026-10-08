@@ -1,0 +1,457 @@
+defmodule TemplatePhoenix.Accounts.Passkeys do
+  @moduledoc """
+  WebAuthn passkey ceremonies, credential management, and the sign-count
+  clone-detection policy.
+
+  Completion (`"webauthn-login"`) tokens are minted ONLY inside
+  `verify_assertion_and_issue_login_token/2` and
+  `verify_second_factor_and_issue_login_token/3` — every fully
+  authenticated session for a passkey-holding account traces back to one
+  of those two verified assertions.
+
+  ## Challenge single-use contract
+
+  Callers of `verify_assertion_and_issue_login_token/2` and
+  `verify_second_factor_and_issue_login_token/3` MUST discard their stored
+  `%Wax.Challenge{}` after calling either function, regardless of outcome.
+  This module cannot make a challenge value single-use on its own: a synced
+  passkey (sign count `0`) will accept a replayed assertion against the
+  same challenge for as long as that challenge remains within its ~120s
+  lifetime. Single-use is therefore a contract the caller upholds (e.g. by
+  deleting the challenge from its session/cache before invoking
+  verification), not a guarantee this core provides.
+
+  ## Observability
+
+  Telemetry (all under `[:template_phoenix, :accounts, ...]`):
+  `[:passkey, :registered | :renamed | :deleted]`,
+  `[:passkey, :asserted]` (metadata: `:context`),
+  `[:passkey, :verification_failed]`,
+  `[:passkey, :sign_count_regression]` (metadata includes `:kind`,
+  `:not_increasing` for a received count that was never greater than the
+  count read at the start of the assertion, `:lost_race` when it was greater
+  at read time but a concurrent bump won the update at commit time).
+
+  Suggested alerts (Health-module style):
+  - Page on ANY `sign_count_regression` — it indicates a cloned credential
+    or a replayed assertion.
+  - Chart login volume by `result` and `method` (the single
+    `[:template_phoenix, :accounts, :login]` event — emitted from
+    `UserAuth.do_log_in_user/3` on success, `UserSessionController` on
+    failure, `UserAuth`'s second-factor gate for `:second_factor_required`,
+    and `UserLive.TwoFactor`'s attempt limiter for `:two_factor_abandoned`)
+    and passkey registrations/deletions per day.
+  - Alert when `verification_failed` spikes relative to `asserted`.
+  """
+
+  import Ecto.Query
+
+  require Logger
+
+  alias TemplatePhoenix.Accounts.Scope
+  alias TemplatePhoenix.Accounts.User
+  alias TemplatePhoenix.Accounts.UserPasskey
+  alias TemplatePhoenix.Accounts.UserToken
+  alias TemplatePhoenix.Accounts.WebAuthn
+  alias TemplatePhoenix.Repo
+
+  @spec passkeys_enabled?(User.t()) :: boolean()
+  def passkeys_enabled?(%User{id: user_id}) do
+    Repo.exists?(from p in UserPasskey, where: p.user_id == ^user_id)
+  end
+
+  ## Registration
+
+  @spec new_registration_challenge(Scope.t()) :: {Wax.Challenge.t(), User.t(), [binary()]}
+  def new_registration_challenge(%Scope{user: user}) do
+    user = ensure_user_handle(user)
+
+    exclude_ids =
+      Repo.all(from p in UserPasskey, where: p.user_id == ^user.id, select: p.credential_id)
+
+    challenge =
+      WebAuthn.impl().new_registration_challenge(
+        Keyword.put(WebAuthn.ceremony_opts(), :attestation, "none")
+      )
+
+    {challenge, user, exclude_ids}
+  end
+
+  @spec register_passkey(Scope.t(), Wax.Challenge.t(), map(), String.t()) ::
+          {:ok, UserPasskey.t()}
+          | {:error, :already_registered | :invalid_payload | :verification_failed}
+  def register_passkey(%Scope{user: user}, %Wax.Challenge{} = challenge, payload, name)
+      when is_map(payload) do
+    with {:ok, attestation_object} <- decode_field(payload, "attestation_object"),
+         {:ok, client_data_json} <- decode_field(payload, "client_data_json"),
+         {:ok, {auth_data, _attestation}} <-
+           verify(WebAuthn.impl().register(attestation_object, client_data_json, challenge)),
+         :ok <- require_user_verified(auth_data) do
+      insert_passkey(user, auth_data, name)
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def register_passkey(%Scope{}, %Wax.Challenge{}, _payload, _name),
+    do: {:error, :invalid_payload}
+
+  @spec client_registration_options(Wax.Challenge.t(), User.t(), [binary()]) :: map()
+  def client_registration_options(%Wax.Challenge{} = challenge, %User{} = user, exclude_ids) do
+    %{
+      challenge: Base.url_encode64(challenge.bytes, padding: false),
+      rp: %{id: challenge.rp_id, name: "TemplatePhoenix"},
+      user: %{
+        id: Base.url_encode64(user.webauthn_user_handle, padding: false),
+        name: user.email,
+        displayName: user.email
+      },
+      pubKeyCredParams: [
+        %{type: "public-key", alg: -8},
+        %{type: "public-key", alg: -7},
+        %{type: "public-key", alg: -257}
+      ],
+      authenticatorSelection: %{
+        residentKey: "required",
+        requireResidentKey: true,
+        userVerification: "required"
+      },
+      excludeCredentials: Enum.map(exclude_ids, &credential_descriptor/1),
+      attestation: "none",
+      timeout: 120_000
+    }
+  end
+
+  ## Shared helpers (private)
+
+  defp ensure_user_handle(%User{webauthn_user_handle: nil} = user) do
+    handle = :crypto.strong_rand_bytes(32)
+
+    {_count, _} =
+      Repo.update_all(
+        from(u in User, where: u.id == ^user.id and is_nil(u.webauthn_user_handle)),
+        set: [webauthn_user_handle: handle]
+      )
+
+    Repo.get!(User, user.id)
+  end
+
+  defp ensure_user_handle(%User{} = user), do: user
+
+  defp insert_passkey(user, auth_data, name) do
+    attested = auth_data.attested_credential_data
+
+    %UserPasskey{
+      user_id: user.id,
+      credential_id: attested.credential_id,
+      public_key: attested.credential_public_key,
+      aaguid: attested.aaguid,
+      sign_count: auth_data.sign_count,
+      backup_eligible: backup_flag(auth_data, :flag_backup_eligible),
+      backup_state: backup_flag(auth_data, :flag_credential_backed_up)
+    }
+    |> UserPasskey.register_changeset(%{"name" => name})
+    |> Repo.insert()
+    |> case do
+      {:ok, passkey} ->
+        emit([:passkey, :registered], %{user_id: user.id, passkey_id: passkey.id})
+        {:ok, passkey}
+
+      {:error, %Ecto.Changeset{errors: errors}} ->
+        if Keyword.has_key?(errors, :credential_id),
+          do: {:error, :already_registered},
+          else: verification_failed(:changeset)
+    end
+  end
+
+  # `field` is the literal Wax.AuthenticatorData key (`:flag_backup_eligible` /
+  # `:flag_credential_backed_up`) — DB column names and Wax field names don't
+  # align mechanically, so this takes the exact atom rather than interpolating it.
+  defp backup_flag(auth_data, field) do
+    case Map.get(auth_data, field) do
+      value when is_boolean(value) -> value
+      _absent -> false
+    end
+  end
+
+  defp require_user_verified(%{flag_user_verified: true}), do: :ok
+  defp require_user_verified(_auth_data), do: verification_failed(:user_verification_missing)
+
+  defp verify({:ok, result}), do: {:ok, result}
+
+  defp verify({:error, error}) do
+    emit([:passkey, :verification_failed], %{error: inspect(error)})
+    {:error, :verification_failed}
+  end
+
+  # Every `{:error, :verification_failed}` return path funnels through here (or
+  # emits inline, for `verify/1`'s wax-error shape) so the moduledoc's "alert
+  # when verification_failed spikes relative to asserted" invariant holds for
+  # all registration failure paths, not just the Wax-rejected ones. `reason`
+  # distinguishes the paths in telemetry metadata.
+  defp verification_failed(reason) do
+    emit([:passkey, :verification_failed], %{reason: reason})
+    {:error, :verification_failed}
+  end
+
+  defp decode_field(payload, field) do
+    with value when is_binary(value) <- Map.get(payload, field),
+         {:ok, decoded} <- Base.url_decode64(value, padding: false) do
+      {:ok, decoded}
+    else
+      _invalid -> {:error, :invalid_payload}
+    end
+  end
+
+  defp credential_descriptor(credential_id) do
+    %{type: "public-key", id: Base.url_encode64(credential_id, padding: false)}
+  end
+
+  defp emit(event_suffix, metadata) do
+    :telemetry.execute(
+      [:template_phoenix, :accounts | event_suffix],
+      %{count: 1},
+      metadata
+    )
+  end
+
+  ## Authentication
+
+  @spec new_authentication_challenge_for_user(User.t()) :: {Wax.Challenge.t(), [binary()]}
+  def new_authentication_challenge_for_user(%User{id: user_id}) do
+    credentials =
+      Repo.all(
+        from p in UserPasskey,
+          where: p.user_id == ^user_id,
+          select: {p.credential_id, p.public_key}
+      )
+
+    challenge =
+      WebAuthn.impl().new_authentication_challenge(
+        Keyword.put(WebAuthn.ceremony_opts(), :allow_credentials, credentials)
+      )
+
+    {challenge, Enum.map(credentials, &elem(&1, 0))}
+  end
+
+  @spec new_discoverable_authentication_challenge() :: Wax.Challenge.t()
+  def new_discoverable_authentication_challenge do
+    WebAuthn.impl().new_authentication_challenge(WebAuthn.ceremony_opts())
+  end
+
+  @doc """
+  Verifies a discoverable-credential assertion and issues a one-time
+  webauthn-login token for the resolved user.
+
+  The caller MUST discard its stored `%Wax.Challenge{}` after calling this
+  function, on every outcome (success or error) — never reuse it for a
+  second verification attempt. This function has no way to make the
+  challenge value itself single-use; a synced passkey reporting sign count
+  0 will accept a replayed assertion against the same challenge for as long
+  as that challenge remains within its ~120s lifetime, so single-use is a
+  contract the caller must uphold, not something this core enforces.
+  """
+  @spec verify_assertion_and_issue_login_token(Wax.Challenge.t(), map()) ::
+          {:ok, User.t(), String.t()} | {:error, :invalid_payload | :verification_failed}
+  def verify_assertion_and_issue_login_token(%Wax.Challenge{} = challenge, payload)
+      when is_map(payload) do
+    with {:ok, credential_id} <- decode_field(payload, "credential_id"),
+         {:ok, user_handle} <- decode_field(payload, "user_handle"),
+         {:ok, passkey, user} <- fetch_passkey_globally(credential_id),
+         :ok <- check_user_handle(user, user_handle),
+         {:ok, auth_data} <- run_assertion(passkey, challenge, payload),
+         :ok <- require_user_verified(auth_data),
+         :ok <- check_and_bump_sign_count(passkey, auth_data.sign_count) do
+      finish_assertion(user, passkey, "discoverable")
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def verify_assertion_and_issue_login_token(%Wax.Challenge{}, _payload),
+    do: {:error, :invalid_payload}
+
+  @doc """
+  Verifies a second-factor assertion for a known `user` and issues a
+  one-time webauthn-login token.
+
+  The caller MUST discard its stored `%Wax.Challenge{}` after calling this
+  function, on every outcome (success or error) — never reuse it for a
+  second verification attempt. This function has no way to make the
+  challenge value itself single-use; a synced passkey reporting sign count
+  0 will accept a replayed assertion against the same challenge for as long
+  as that challenge remains within its ~120s lifetime, so single-use is a
+  contract the caller must uphold, not something this core enforces.
+  """
+  @spec verify_second_factor_and_issue_login_token(User.t(), Wax.Challenge.t(), map()) ::
+          {:ok, User.t(), String.t()} | {:error, :invalid_payload | :verification_failed}
+  def verify_second_factor_and_issue_login_token(
+        %User{} = user,
+        %Wax.Challenge{} = challenge,
+        payload
+      )
+      when is_map(payload) do
+    with {:ok, credential_id} <- decode_field(payload, "credential_id"),
+         {:ok, passkey} <- fetch_passkey_for_user(user, credential_id),
+         {:ok, auth_data} <- run_assertion(passkey, challenge, payload),
+         :ok <- require_user_verified(auth_data),
+         :ok <- check_and_bump_sign_count(passkey, auth_data.sign_count) do
+      finish_assertion(user, passkey, "second_factor")
+    else
+      {:error, reason} -> {:error, reason}
+    end
+  end
+
+  def verify_second_factor_and_issue_login_token(%User{}, %Wax.Challenge{}, _payload),
+    do: {:error, :invalid_payload}
+
+  @spec client_authentication_options(Wax.Challenge.t(), [binary()]) :: map()
+  def client_authentication_options(%Wax.Challenge{} = challenge, allow_credential_ids) do
+    base = %{
+      challenge: Base.url_encode64(challenge.bytes, padding: false),
+      rpId: challenge.rp_id,
+      userVerification: "required",
+      timeout: 120_000
+    }
+
+    case allow_credential_ids do
+      [] -> base
+      ids -> Map.put(base, :allowCredentials, Enum.map(ids, &credential_descriptor/1))
+    end
+  end
+
+  ## Assertion helpers (private)
+
+  defp fetch_passkey_globally(credential_id) do
+    case Repo.one(
+           from p in UserPasskey,
+             where: p.credential_id == ^credential_id,
+             preload: :user
+         ) do
+      %UserPasskey{user: %User{} = user} = passkey -> {:ok, passkey, user}
+      nil -> verification_failed(:unknown_credential)
+    end
+  end
+
+  defp fetch_passkey_for_user(%User{id: user_id}, credential_id) do
+    case Repo.one(
+           from p in UserPasskey,
+             where: p.user_id == ^user_id and p.credential_id == ^credential_id
+         ) do
+      %UserPasskey{} = passkey -> {:ok, passkey}
+      nil -> verification_failed(:credential_not_owned)
+    end
+  end
+
+  defp check_user_handle(%User{webauthn_user_handle: handle}, handle) when is_binary(handle),
+    do: :ok
+
+  defp check_user_handle(_user, _handle), do: verification_failed(:user_handle_mismatch)
+
+  defp run_assertion(%UserPasskey{} = passkey, challenge, payload) do
+    with {:ok, authenticator_data} <- decode_field(payload, "authenticator_data"),
+         {:ok, signature} <- decode_field(payload, "signature"),
+         {:ok, client_data_json} <- decode_field(payload, "client_data_json") do
+      case WebAuthn.impl().authenticate(
+             passkey.credential_id,
+             authenticator_data,
+             signature,
+             client_data_json,
+             challenge,
+             [{passkey.credential_id, passkey.public_key}]
+           ) do
+        {:ok, auth_data} -> {:ok, auth_data}
+        {:error, error} -> verification_failed({:wax, inspect(error)})
+      end
+    end
+  end
+
+  defp check_and_bump_sign_count(%UserPasskey{sign_count: 0}, 0), do: :ok
+
+  # The read-time `stored` value is only used to decide whether to attempt
+  # the bump at all. The update itself is re-checked against whatever is in
+  # the row at commit time (`p.sign_count < ^received`), so a concurrent
+  # writer that already advanced the counter past `received` correctly loses
+  # the race, while one that left it below `received` correctly loses to us
+  # instead of falsely rejecting on `sign_count == stored` no longer matching.
+  defp check_and_bump_sign_count(%UserPasskey{sign_count: stored} = passkey, received)
+       when received > stored do
+    {updated, _} =
+      Repo.update_all(
+        from(p in UserPasskey, where: p.id == ^passkey.id and p.sign_count < ^received),
+        set: [sign_count: received]
+      )
+
+    if updated == 1, do: :ok, else: sign_count_regression(passkey, received, :lost_race)
+  end
+
+  defp check_and_bump_sign_count(%UserPasskey{} = passkey, received),
+    do: sign_count_regression(passkey, received, :not_increasing)
+
+  defp sign_count_regression(passkey, received, kind) do
+    emit([:passkey, :sign_count_regression], %{
+      user_id: passkey.user_id,
+      passkey_id: passkey.id,
+      stored: passkey.sign_count,
+      received: received,
+      kind: kind
+    })
+
+    Logger.warning(
+      "passkey sign count regression user_id=#{passkey.user_id} passkey_id=#{passkey.id} " <>
+        "stored=#{passkey.sign_count} received=#{received} kind=#{kind}"
+    )
+
+    {:error, :verification_failed}
+  end
+
+  defp finish_assertion(user, passkey, tag) do
+    Repo.update_all(
+      from(p in UserPasskey, where: p.id == ^passkey.id),
+      set: [last_used_at: DateTime.utc_now(:second)]
+    )
+
+    {encoded, token} = UserToken.build_passkey_token(user, "webauthn-login", tag)
+    Repo.insert!(token)
+    emit([:passkey, :asserted], %{user_id: user.id, passkey_id: passkey.id, context: tag})
+    {:ok, user, encoded}
+  end
+
+  ## Management
+
+  @spec list_passkeys(Scope.t()) :: [UserPasskey.t()]
+  def list_passkeys(%Scope{user: %User{id: user_id}}) do
+    Repo.all(from p in UserPasskey, where: p.user_id == ^user_id, order_by: [desc: p.inserted_at])
+  end
+
+  @spec get_passkey!(Scope.t(), pos_integer() | String.t()) :: UserPasskey.t()
+  def get_passkey!(%Scope{user: %User{id: user_id}}, id) do
+    Repo.one!(from p in UserPasskey, where: p.user_id == ^user_id and p.id == ^id)
+  end
+
+  @spec rename_passkey(Scope.t(), pos_integer() | String.t(), String.t()) ::
+          {:ok, UserPasskey.t()} | {:error, Ecto.Changeset.t()}
+  def rename_passkey(%Scope{} = scope, id, name) do
+    scope
+    |> get_passkey!(id)
+    |> UserPasskey.rename_changeset(%{"name" => name})
+    |> Repo.update()
+    |> tap(fn
+      {:ok, passkey} ->
+        emit([:passkey, :renamed], %{user_id: passkey.user_id, passkey_id: passkey.id})
+
+      _error ->
+        :ok
+    end)
+  end
+
+  @spec delete_passkey(Scope.t(), pos_integer() | String.t()) ::
+          {:ok, UserPasskey.t(), non_neg_integer()}
+  def delete_passkey(%Scope{user: %User{id: user_id}} = scope, id) do
+    passkey = get_passkey!(scope, id)
+    {:ok, deleted} = Repo.delete(passkey)
+    remaining = Repo.aggregate(from(p in UserPasskey, where: p.user_id == ^user_id), :count)
+    emit([:passkey, :deleted], %{user_id: user_id, passkey_id: deleted.id, remaining: remaining})
+    {:ok, deleted, remaining}
+  end
+end

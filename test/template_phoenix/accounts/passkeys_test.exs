@@ -1,0 +1,621 @@
+defmodule TemplatePhoenix.Accounts.PasskeysTest do
+  use TemplatePhoenix.DataCase, async: true
+
+  import Mox
+  import TemplatePhoenix.AccountsFixtures
+
+  alias TemplatePhoenix.Accounts
+  alias TemplatePhoenix.Accounts.FakeWebAuthn
+  alias TemplatePhoenix.Accounts.Passkeys
+  alias TemplatePhoenix.Accounts.Scope
+  alias TemplatePhoenix.Accounts.UserPasskey
+  alias TemplatePhoenix.Accounts.UserToken
+  alias TemplatePhoenix.Accounts.WebAuthn
+  alias TemplatePhoenixWeb.Endpoint
+
+  setup :verify_on_exit!
+
+  setup do
+    Mox.stub_with(TemplatePhoenix.MockWebAuthn, TemplatePhoenix.Accounts.FakeWebAuthn)
+    :ok
+  end
+
+  describe "UserPasskey.register_changeset/2" do
+    test "requires a name between 1 and 80 characters" do
+      changeset = UserPasskey.register_changeset(%UserPasskey{}, %{"name" => ""})
+      assert %{name: ["can't be blank"]} = errors_on(changeset)
+
+      changeset =
+        UserPasskey.register_changeset(%UserPasskey{}, %{"name" => String.duplicate("a", 81)})
+
+      assert %{name: [_]} = errors_on(changeset)
+    end
+
+    test "does not cast programmatic fields" do
+      changeset =
+        UserPasskey.register_changeset(%UserPasskey{}, %{
+          "name" => "ok",
+          "sign_count" => 999,
+          "credential_id" => "attacker"
+        })
+
+      refute Ecto.Changeset.changed?(changeset, :sign_count)
+      refute Ecto.Changeset.changed?(changeset, :credential_id)
+    end
+  end
+
+  describe "credential_id uniqueness" do
+    test "is enforced globally, across users" do
+      user1 = user_fixture()
+      user2 = user_fixture()
+      credential_id = :crypto.strong_rand_bytes(16)
+      user_passkey_fixture(user1, credential_id: credential_id)
+
+      assert_raise Ecto.ConstraintError, fn ->
+        Repo.insert!(%UserPasskey{
+          user_id: user2.id,
+          credential_id: credential_id,
+          public_key: %{-1 => "key"},
+          name: "dup"
+        })
+      end
+    end
+  end
+
+  describe "WebAuthn.ceremony_opts/0" do
+    test "derives origin and rp_id from the endpoint at runtime" do
+      opts = WebAuthn.ceremony_opts()
+      assert opts[:origin] == Endpoint.url()
+      assert opts[:rp_id] == Endpoint.host()
+      assert opts[:user_verification] == "required"
+    end
+  end
+
+  describe "pending second factor tokens" do
+    test "round-trips within TTL and is replaced on re-issue" do
+      user = user_fixture()
+      encoded = Accounts.generate_pending_second_factor_token(user)
+      assert Accounts.get_user_by_pending_second_factor_token(encoded).id == user.id
+
+      encoded2 = Accounts.generate_pending_second_factor_token(user)
+      assert Accounts.get_user_by_pending_second_factor_token(encoded) == nil
+      assert Accounts.get_user_by_pending_second_factor_token(encoded2).id == user.id
+    end
+
+    test "expires after 10 minutes" do
+      user = user_fixture()
+      encoded = Accounts.generate_pending_second_factor_token(user)
+      backdate_tokens(user, "passkey-2fa", minutes: -11)
+      assert Accounts.get_user_by_pending_second_factor_token(encoded) == nil
+    end
+
+    test "reads are non-consuming; delete removes it" do
+      user = user_fixture()
+      encoded = Accounts.generate_pending_second_factor_token(user)
+      assert Accounts.get_user_by_pending_second_factor_token(encoded)
+      assert Accounts.get_user_by_pending_second_factor_token(encoded)
+      assert :ok = Accounts.delete_pending_second_factor_token(encoded)
+      assert Accounts.get_user_by_pending_second_factor_token(encoded) == nil
+    end
+
+    test "garbage input returns nil, never raises" do
+      assert Accounts.get_user_by_pending_second_factor_token("!!! not base64 !!!") == nil
+      assert :ok = Accounts.delete_pending_second_factor_token("!!! not base64 !!!")
+    end
+  end
+
+  describe "webauthn login tokens" do
+    test "consume is single-use and returns the issuance tag" do
+      user = user_fixture()
+      encoded = issue_webauthn_login_token(user, "discoverable")
+      assert {:ok, consumed_user, "discoverable"} = Accounts.consume_webauthn_login_token(encoded)
+      assert consumed_user.id == user.id
+      assert Accounts.consume_webauthn_login_token(encoded) == :error
+    end
+
+    test "expires after 2 minutes and rejects garbage" do
+      user = user_fixture()
+      encoded = issue_webauthn_login_token(user, "second_factor")
+      backdate_tokens(user, "webauthn-login", minutes: -3)
+      assert Accounts.consume_webauthn_login_token(encoded) == :error
+      assert Accounts.consume_webauthn_login_token("garbage") == :error
+    end
+  end
+
+  describe "new_registration_challenge/1" do
+    test "generates and persists a stable webauthn_user_handle" do
+      user = user_fixture()
+      assert user.webauthn_user_handle == nil
+
+      {_challenge, user_with_handle, []} =
+        Passkeys.new_registration_challenge(Scope.for_user(user))
+
+      assert byte_size(user_with_handle.webauthn_user_handle) == 32
+
+      {_challenge, again, []} =
+        Passkeys.new_registration_challenge(Scope.for_user(user_with_handle))
+
+      assert again.webauthn_user_handle == user_with_handle.webauthn_user_handle
+    end
+
+    test "excludes already-registered credential ids" do
+      user = user_fixture()
+      passkey = user_passkey_fixture(user)
+      {_challenge, _user, exclude_ids} = Passkeys.new_registration_challenge(Scope.for_user(user))
+      assert exclude_ids == [passkey.credential_id]
+    end
+  end
+
+  describe "register_passkey/4" do
+    setup do
+      user = user_fixture()
+      {challenge, user, _exclude} = Passkeys.new_registration_challenge(Scope.for_user(user))
+      %{user: user, scope: Scope.for_user(user), challenge: challenge}
+    end
+
+    test "persists the verified credential", %{scope: scope, challenge: challenge, user: user} do
+      payload = webauthn_registration_payload("credential-abc")
+
+      assert {:ok, passkey} = Passkeys.register_passkey(scope, challenge, payload, "My laptop")
+      assert passkey.user_id == user.id
+      assert passkey.credential_id == "credential-abc"
+      assert passkey.name == "My laptop"
+      assert Passkeys.passkeys_enabled?(user)
+    end
+
+    test "duplicate credential id is rejected", %{scope: scope, challenge: challenge} do
+      payload = webauthn_registration_payload("credential-dup")
+      assert {:ok, _} = Passkeys.register_passkey(scope, challenge, payload, "One")
+
+      assert {:error, :already_registered} =
+               Passkeys.register_passkey(scope, challenge, payload, "Two")
+    end
+
+    test "undecodable base64url payload fails cleanly", %{scope: scope, challenge: challenge} do
+      payload = %{"attestation_object" => "!!!", "client_data_json" => "!!!"}
+
+      assert {:error, :invalid_payload} =
+               Passkeys.register_passkey(scope, challenge, payload, "X")
+    end
+
+    test "non-map payload is rejected without raising", %{scope: scope, challenge: challenge} do
+      assert {:error, :invalid_payload} = Passkeys.register_passkey(scope, challenge, nil, "X")
+
+      assert {:error, :invalid_payload} =
+               Passkeys.register_passkey(scope, challenge, ["not", "a", "map"], "X")
+    end
+
+    test "verification failure surfaces as verification_failed", %{
+      scope: scope,
+      challenge: challenge
+    } do
+      Mox.expect(TemplatePhoenix.MockWebAuthn, :register, fn _, _, _ ->
+        {:error, %RuntimeError{message: "bad attestation"}}
+      end)
+
+      payload = webauthn_registration_payload("credential-bad")
+
+      assert {:error, :verification_failed} =
+               Passkeys.register_passkey(scope, challenge, payload, "X")
+    end
+
+    test "missing user verification flag is rejected", %{scope: scope, challenge: challenge} do
+      Mox.expect(TemplatePhoenix.MockWebAuthn, :register, fn attestation_object, _, _ ->
+        auth_data =
+          FakeWebAuthn.auth_data(credential_id: attestation_object, flag_user_verified: false)
+
+        {:ok, {auth_data, :none}}
+      end)
+
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [
+          [:template_phoenix, :accounts, :passkey, :verification_failed]
+        ])
+
+      payload = webauthn_registration_payload("credential-nouv")
+
+      assert {:error, :verification_failed} =
+               Passkeys.register_passkey(scope, challenge, payload, "X")
+
+      assert_received {[:template_phoenix, :accounts, :passkey, :verification_failed], ^ref,
+                       %{count: 1}, %{reason: :user_verification_missing}}
+    end
+  end
+
+  describe "discoverable assertion" do
+    setup do
+      user = user_fixture()
+      {_challenge, user, _} = Passkeys.new_registration_challenge(Scope.for_user(user))
+      passkey = user_passkey_fixture(user, credential_id: "cred-disco")
+      challenge = Passkeys.new_discoverable_authentication_challenge()
+      %{user: user, passkey: passkey, challenge: challenge}
+    end
+
+    test "verifies, bumps last_used_at, and issues a consumable login token",
+         %{user: user, passkey: passkey, challenge: challenge} do
+      payload = webauthn_assertion_payload(passkey.credential_id, user.webauthn_user_handle)
+
+      assert {:ok, verified_user, login_token} =
+               Passkeys.verify_assertion_and_issue_login_token(challenge, payload)
+
+      assert verified_user.id == user.id
+      assert {:ok, _user, "discoverable"} = Accounts.consume_webauthn_login_token(login_token)
+      assert Repo.get!(UserPasskey, passkey.id).last_used_at
+    end
+
+    test "unknown credential id fails generically", %{challenge: challenge, user: user} do
+      payload = webauthn_assertion_payload("no-such-cred", user.webauthn_user_handle)
+
+      assert {:error, :verification_failed} =
+               Passkeys.verify_assertion_and_issue_login_token(challenge, payload)
+    end
+
+    test "user_handle mismatch is rejected even when Wax would pass",
+         %{passkey: passkey, challenge: challenge} do
+      payload = webauthn_assertion_payload(passkey.credential_id, :crypto.strong_rand_bytes(32))
+
+      assert {:error, :verification_failed} =
+               Passkeys.verify_assertion_and_issue_login_token(challenge, payload)
+    end
+
+    test "missing user_handle is rejected", %{passkey: passkey, challenge: challenge} do
+      payload = webauthn_assertion_payload(passkey.credential_id, nil)
+
+      assert {:error, :invalid_payload} =
+               Passkeys.verify_assertion_and_issue_login_token(challenge, payload)
+    end
+
+    test "malformed base64url in any field fails cleanly", %{challenge: challenge} do
+      payload = %{
+        "credential_id" => "!!!",
+        "authenticator_data" => "!!!",
+        "signature" => "!!!",
+        "client_data_json" => "!!!",
+        "user_handle" => "!!!"
+      }
+
+      assert {:error, :invalid_payload} =
+               Passkeys.verify_assertion_and_issue_login_token(challenge, payload)
+    end
+
+    test "non-map payload is rejected without raising", %{challenge: challenge} do
+      assert {:error, :invalid_payload} =
+               Passkeys.verify_assertion_and_issue_login_token(challenge, nil)
+
+      assert {:error, :invalid_payload} =
+               Passkeys.verify_assertion_and_issue_login_token(challenge, ["not", "a", "map"])
+    end
+
+    test "missing user verification is rejected and issues no login token",
+         %{user: user, passkey: passkey, challenge: challenge} do
+      Mox.expect(TemplatePhoenix.MockWebAuthn, :authenticate, fn cred_id, _, _, _, _, _ ->
+        {:ok, FakeWebAuthn.auth_data(credential_id: cred_id, flag_user_verified: false)}
+      end)
+
+      payload = webauthn_assertion_payload(passkey.credential_id, user.webauthn_user_handle)
+
+      assert {:error, :verification_failed} =
+               Passkeys.verify_assertion_and_issue_login_token(challenge, payload)
+
+      assert Repo.aggregate(
+               from(t in UserToken,
+                 where: t.user_id == ^user.id and t.context == "webauthn-login"
+               ),
+               :count
+             ) == 0
+    end
+  end
+
+  describe "second-factor assertion" do
+    setup do
+      user = user_fixture()
+      passkey = user_passkey_fixture(user, credential_id: "cred-2fa")
+      {challenge, allow_ids} = Passkeys.new_authentication_challenge_for_user(user)
+      %{user: user, passkey: passkey, challenge: challenge, allow_ids: allow_ids}
+    end
+
+    test "allow list contains exactly the user's credentials", %{
+      passkey: passkey,
+      allow_ids: allow_ids
+    } do
+      assert allow_ids == [passkey.credential_id]
+    end
+
+    test "verifies and issues a second_factor-tagged token",
+         %{user: user, passkey: passkey, challenge: challenge} do
+      payload = webauthn_assertion_payload(passkey.credential_id)
+
+      assert {:ok, _user, login_token} =
+               Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
+
+      assert {:ok, _user, "second_factor"} = Accounts.consume_webauthn_login_token(login_token)
+    end
+
+    test "another user's valid passkey cannot complete this user's second factor",
+         %{user: user, challenge: challenge} do
+      other = user_fixture()
+      other_passkey = user_passkey_fixture(other, credential_id: "cred-other")
+      payload = webauthn_assertion_payload(other_passkey.credential_id)
+
+      assert {:error, :verification_failed} =
+               Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
+    end
+
+    test "non-map payload is rejected without raising", %{user: user, challenge: challenge} do
+      assert {:error, :invalid_payload} =
+               Passkeys.verify_second_factor_and_issue_login_token(user, challenge, nil)
+
+      assert {:error, :invalid_payload} =
+               Passkeys.verify_second_factor_and_issue_login_token(user, challenge, [
+                 "not",
+                 "a",
+                 "map"
+               ])
+    end
+
+    test "missing user verification is rejected and issues no login token",
+         %{user: user, passkey: passkey, challenge: challenge} do
+      Mox.expect(TemplatePhoenix.MockWebAuthn, :authenticate, fn cred_id, _, _, _, _, _ ->
+        {:ok, FakeWebAuthn.auth_data(credential_id: cred_id, flag_user_verified: false)}
+      end)
+
+      payload = webauthn_assertion_payload(passkey.credential_id)
+
+      assert {:error, :verification_failed} =
+               Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
+
+      assert Repo.aggregate(
+               from(t in UserToken,
+                 where: t.user_id == ^user.id and t.context == "webauthn-login"
+               ),
+               :count
+             ) == 0
+    end
+  end
+
+  describe "sign-count policy" do
+    setup do
+      user = user_fixture()
+      %{user: user}
+    end
+
+    test "0 -> 0 is accepted (counter unsupported)", %{user: user} do
+      passkey = user_passkey_fixture(user, sign_count: 0)
+      {challenge, _} = Passkeys.new_authentication_challenge_for_user(user)
+      payload = webauthn_assertion_payload(passkey.credential_id)
+
+      assert {:ok, _, _} =
+               Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
+    end
+
+    test "increment is accepted and persisted", %{user: user} do
+      passkey = user_passkey_fixture(user, sign_count: 5)
+      {challenge, _} = Passkeys.new_authentication_challenge_for_user(user)
+
+      Mox.expect(TemplatePhoenix.MockWebAuthn, :authenticate, fn cred_id, _, _, _, _, _ ->
+        {:ok, FakeWebAuthn.auth_data(credential_id: cred_id, sign_count: 6)}
+      end)
+
+      payload = webauthn_assertion_payload(passkey.credential_id)
+
+      assert {:ok, _, _} =
+               Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
+
+      assert Repo.get!(UserPasskey, passkey.id).sign_count == 6
+    end
+
+    test "regression is rejected and emits telemetry", %{user: user} do
+      passkey = user_passkey_fixture(user, sign_count: 10)
+      {challenge, _} = Passkeys.new_authentication_challenge_for_user(user)
+
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [
+          [:template_phoenix, :accounts, :passkey, :sign_count_regression]
+        ])
+
+      Mox.expect(TemplatePhoenix.MockWebAuthn, :authenticate, fn cred_id, _, _, _, _, _ ->
+        {:ok, FakeWebAuthn.auth_data(credential_id: cred_id, sign_count: 3)}
+      end)
+
+      payload = webauthn_assertion_payload(passkey.credential_id)
+
+      assert {:error, :verification_failed} =
+               Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
+
+      assert_received {[:template_phoenix, :accounts, :passkey, :sign_count_regression], ^ref, _,
+                       %{kind: :not_increasing}}
+
+      assert Repo.get!(UserPasskey, passkey.id).sign_count == 10
+    end
+
+    test "equal counts are rejected as not increasing", %{user: user} do
+      passkey = user_passkey_fixture(user, sign_count: 5)
+      {challenge, _} = Passkeys.new_authentication_challenge_for_user(user)
+
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [
+          [:template_phoenix, :accounts, :passkey, :sign_count_regression]
+        ])
+
+      Mox.expect(TemplatePhoenix.MockWebAuthn, :authenticate, fn cred_id, _, _, _, _, _ ->
+        {:ok, FakeWebAuthn.auth_data(credential_id: cred_id, sign_count: 5)}
+      end)
+
+      payload = webauthn_assertion_payload(passkey.credential_id)
+
+      assert {:error, :verification_failed} =
+               Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
+
+      assert_received {[:template_phoenix, :accounts, :passkey, :sign_count_regression], ^ref, _,
+                       %{kind: :not_increasing, stored: 5, received: 5}}
+
+      assert Repo.get!(UserPasskey, passkey.id).sign_count == 5
+    end
+
+    test "stored > 0 with received 0 is rejected", %{user: user} do
+      passkey = user_passkey_fixture(user, sign_count: 4)
+      {challenge, _} = Passkeys.new_authentication_challenge_for_user(user)
+
+      Mox.expect(TemplatePhoenix.MockWebAuthn, :authenticate, fn cred_id, _, _, _, _, _ ->
+        {:ok, FakeWebAuthn.auth_data(credential_id: cred_id, sign_count: 0)}
+      end)
+
+      payload = webauthn_assertion_payload(passkey.credential_id)
+
+      assert {:error, :verification_failed} =
+               Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
+
+      assert Repo.get!(UserPasskey, passkey.id).sign_count == 4
+    end
+
+    test "optimistic guard: concurrent bump past the received count rejects the assertion (lost_race)",
+         %{user: user} do
+      passkey = user_passkey_fixture(user, sign_count: 5)
+      {challenge, _} = Passkeys.new_authentication_challenge_for_user(user)
+
+      ref =
+        :telemetry_test.attach_event_handlers(self(), [
+          [:template_phoenix, :accounts, :passkey, :sign_count_regression]
+        ])
+
+      Mox.expect(TemplatePhoenix.MockWebAuthn, :authenticate, fn cred_id, _, _, _, _, _ ->
+        # Concurrent writer bumps the row to 7 before our own commit lands.
+        Repo.update_all(
+          from(p in UserPasskey, where: p.id == ^passkey.id),
+          set: [sign_count: 7]
+        )
+
+        {:ok, FakeWebAuthn.auth_data(credential_id: cred_id, sign_count: 6)}
+      end)
+
+      payload = webauthn_assertion_payload(passkey.credential_id)
+
+      assert {:error, :verification_failed} =
+               Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
+
+      assert_received {[:template_phoenix, :accounts, :passkey, :sign_count_regression], ^ref, _,
+                       %{kind: :lost_race, stored: 5, received: 6}}
+
+      assert Repo.get!(UserPasskey, passkey.id).sign_count == 7
+    end
+
+    test "genuine lost race: a concurrent bump below the received count still succeeds", %{
+      user: user
+    } do
+      passkey = user_passkey_fixture(user, sign_count: 5)
+      {challenge, _} = Passkeys.new_authentication_challenge_for_user(user)
+
+      Mox.expect(TemplatePhoenix.MockWebAuthn, :authenticate, fn cred_id, _, _, _, _, _ ->
+        # Concurrent writer bumps the row to 6 — still below our received
+        # count of 7, so our commit-time guard (`sign_count < received`)
+        # still matches the row and wins the race.
+        Repo.update_all(
+          from(p in UserPasskey, where: p.id == ^passkey.id),
+          set: [sign_count: 6]
+        )
+
+        {:ok, FakeWebAuthn.auth_data(credential_id: cred_id, sign_count: 7)}
+      end)
+
+      payload = webauthn_assertion_payload(passkey.credential_id)
+
+      assert {:ok, _, _} =
+               Passkeys.verify_second_factor_and_issue_login_token(user, challenge, payload)
+
+      assert Repo.get!(UserPasskey, passkey.id).sign_count == 7
+    end
+  end
+
+  describe "management" do
+    setup do
+      user = user_fixture()
+      %{user: user, scope: Scope.for_user(user), passkey: user_passkey_fixture(user)}
+    end
+
+    test "list/rename/delete are scoped to the owner", %{scope: scope, passkey: passkey} do
+      other_scope = Scope.for_user(user_fixture())
+
+      assert [%UserPasskey{id: id}] = Passkeys.list_passkeys(scope)
+      assert id == passkey.id
+      assert Passkeys.list_passkeys(other_scope) == []
+
+      assert_raise Ecto.NoResultsError, fn -> Passkeys.get_passkey!(other_scope, passkey.id) end
+      assert_raise Ecto.NoResultsError, fn -> Passkeys.delete_passkey(other_scope, passkey.id) end
+    end
+
+    test "rename validates and persists", %{scope: scope, passkey: passkey} do
+      assert {:error, %Ecto.Changeset{}} = Passkeys.rename_passkey(scope, passkey.id, "")
+      assert {:ok, renamed} = Passkeys.rename_passkey(scope, passkey.id, "Yubikey 5C")
+      assert renamed.name == "Yubikey 5C"
+    end
+
+    test "delete reports how many passkeys remain", %{user: user, scope: scope, passkey: passkey} do
+      second = user_passkey_fixture(user)
+      assert {:ok, _deleted, 1} = Passkeys.delete_passkey(scope, passkey.id)
+      assert {:ok, _deleted, 0} = Passkeys.delete_passkey(scope, second.id)
+      refute Passkeys.passkeys_enabled?(user)
+    end
+  end
+
+  describe "single-mint-site invariant (architecture)" do
+    # The two files allowed to reference the "webauthn-login" context
+    # literal at all: `Passkeys` mints it (only inside the two verified
+    # assertion functions — see its moduledoc), `UserToken` builds and
+    # queries it. No other lib/ file should ever need this string.
+    @webauthn_login_string_files ~w(
+      lib/template_phoenix/accounts/passkeys.ex
+      lib/template_phoenix/accounts/user_token.ex
+    )
+
+    # `build_passkey_token/3` itself is only ever called from `Passkeys`
+    # (webauthn-login completion tokens) and from `UserToken` itself
+    # (its `build_pending_second_factor_token/1` wrapper mints the
+    # passkey-2fa context so `Accounts` never has to call the shared
+    # builder directly).
+    @build_passkey_token_caller_files ~w(
+      lib/template_phoenix/accounts/passkeys.ex
+      lib/template_phoenix/accounts/user_token.ex
+    )
+
+    test "\"webauthn-login\" appears in no lib/ file outside the mint/query sites" do
+      for path <- lib_files(), path not in @webauthn_login_string_files do
+        refute File.read!(path) =~ "webauthn-login",
+               "#{path}: unexpected \"webauthn-login\" reference outside the sanctioned files"
+      end
+    end
+
+    test "build_passkey_token/3 is called from no lib/ file outside the sanctioned callers" do
+      for path <- lib_files(), path not in @build_passkey_token_caller_files do
+        refute File.read!(path) =~ "build_passkey_token(",
+               "#{path}: unexpected build_passkey_token/3 call outside the sanctioned callers"
+      end
+    end
+
+    # The gate-bypassing session mints: `do_log_in_user/3` is private to
+    # `UserAuth`, and its only public doorway past the second-factor gate,
+    # `log_in_user_after_webauthn/3`, has exactly one caller — the
+    # controller action that has just consumed a webauthn completion token.
+    test "session mints that bypass the second-factor gate have no stray call sites" do
+      user_auth = "lib/template_phoenix_web/user_auth.ex"
+      controller = "lib/template_phoenix_web/controllers/user_session_controller.ex"
+
+      for path <- lib_files(), path not in [user_auth, controller] do
+        source = File.read!(path)
+
+        refute source =~ "log_in_user_after_webauthn(",
+               "#{path}: unexpected log_in_user_after_webauthn/3 call"
+
+        refute source =~ "do_log_in_user(", "#{path}: unexpected do_log_in_user/3 call"
+      end
+
+      controller_source = File.read!(controller)
+      refute controller_source =~ "do_log_in_user("
+      assert length(String.split(controller_source, "log_in_user_after_webauthn(")) == 2
+    end
+
+    @spec lib_files() :: [Path.t()]
+    defp lib_files do
+      "lib/**/*.ex" |> Path.wildcard() |> Enum.filter(&File.regular?/1)
+    end
+  end
+end

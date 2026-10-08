@@ -89,3 +89,44 @@ jobs:
       # Renames a copy of the committed tree to wombat_app and runs the
       # renamed project's compile + test suite.
       - run: bin/test-rename.sh
+
+  # auth:begin — this job is removed by bin/remove-auth.sh
+  remove-auth:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: template_phoenix
+          POSTGRES_PASSWORD: template_phoenix
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      PGHOST: localhost
+      PGUSER: template_phoenix
+      PGPASSWORD: template_phoenix
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: jdx/mise-action@v4
+
+      - name: Cache dialyzer core PLTs
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/dialyxir
+          key: plt-remove-auth-${{ runner.os }}-${{ hashFiles('mise.toml') }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            plt-remove-auth-${{ runner.os }}-${{ hashFiles('mise.toml') }}-
+
+      # Strips auth from a copy of the committed tree and runs the full
+      # quality gate (mix precommit) plus JS tests on the result.
+      - run: bin/test-remove-auth.sh
+  # auth:end

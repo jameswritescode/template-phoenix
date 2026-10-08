@@ -81,8 +81,33 @@ Then, from the new project:
    JSON
    ```
 
+   <!-- auth:begin -->
+   With the auth layer present, also include `"remove-auth"` in the
+   `contexts` array above.
+   <!-- auth:end -->
+
    `enforce_admins: false` keeps direct pushes to `main` working for
    admins; only pull requests wait on the required checks.
+
+<!-- auth:begin — removed by bin/remove-auth.sh -->
+## Authentication
+
+The template ships with `phx.gen.auth` (magic-link-first, argon2 passwords,
+scopes, sudo mode) plus first-class WebAuthn passkeys:
+
+- Any account can add passkeys under **Settings → Passkeys** (sudo-gated).
+- Once an account has a passkey, every sign-in path — password, magic
+  link, sudo re-auth — requires a passkey as a second factor.
+- Passkey-only sign-in and passkey-only sudo work via discoverable
+  credentials (user verification always required).
+
+Don't want auth? Remove the entire layer with one command, verified in CI
+by `bin/test-remove-auth.sh`:
+
+```sh
+bin/remove-auth.sh && mix setup && mix precommit
+```
+<!-- auth:end -->
 
 ## Development
 

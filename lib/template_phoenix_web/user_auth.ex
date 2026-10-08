@@ -1,0 +1,432 @@
+defmodule TemplatePhoenixWeb.UserAuth do
+  @moduledoc """
+  Session and remember-me authentication: plugs for controllers and `on_mount` hooks for LiveViews.
+  """
+
+  use TemplatePhoenixWeb, :verified_routes
+
+  import Plug.Conn
+  import Phoenix.Controller
+
+  alias TemplatePhoenix.Accounts
+  alias TemplatePhoenix.Accounts.Passkeys
+  alias TemplatePhoenix.Accounts.Scope
+
+  # Make the remember me cookie valid for 14 days. This should match
+  # the session validity setting in UserToken.
+  @max_cookie_age_in_days 14
+  @remember_me_cookie "_template_phoenix_web_user_remember_me"
+  @remember_me_options [
+    sign: true,
+    max_age: @max_cookie_age_in_days * 24 * 60 * 60,
+    same_site: "Lax"
+  ]
+
+  # How old the session token should be before a new one is issued. When a request is made
+  # with a session token older than this value, then a new session token will be created
+  # and the session and remember-me cookies (if set) will be updated with the new token.
+  # Lowering this value will result in more tokens being created by active users. Increasing
+  # it will result in less time before a session token expires for a user to get issued a new
+  # token. This can be set to a value greater than `@max_cookie_age_in_days` to disable
+  # the reissuing of tokens completely.
+  @session_reissue_age_in_days 7
+
+  @sudo_window_minutes -10
+
+  @doc """
+  Logs the user in after a verified first factor (password or magic link).
+
+  Redirects to the session's `:user_return_to` path
+  or falls back to the `signed_in_path/1`.
+
+  Second-factor gate: when the user has at least one passkey, no session is
+  minted here. Instead the session is fully renewed, a pending second-factor
+  token is stored, and the user is sent to the mandatory passkey step. The
+  only exception is a conn already authenticated as this same user in sudo
+  mode (e.g. the re-mint after a password change).
+  """
+  @spec log_in_user(Plug.Conn.t(), Accounts.User.t(), map()) :: Plug.Conn.t()
+  def log_in_user(conn, user, params \\ %{}) do
+    cond do
+      not Passkeys.passkeys_enabled?(user) ->
+        do_log_in_user(conn, user, params)
+
+      scope_user = sudo_fresh_same_user(conn, user) ->
+        # Narrow owner-approved carve-out: this conn is already fully
+        # authenticated as this user with a sudo-fresh ceremony — e.g. the
+        # password-change re-mint seconds after sudo demanded a passkey.
+        # The re-mint carries the ORIGINAL ceremony time so a first-factor
+        # re-auth can never extend sudo; only a passkey ceremony does.
+        do_log_in_user(conn, %{user | authenticated_at: scope_user.authenticated_at}, params)
+
+      true ->
+        redirect_to_second_factor(conn, user, params)
+    end
+  end
+
+  # Uses the require_sudo_mode gate's own 10-minute window: a session that
+  # could not pass that gate must take the ceremony detour, not this path.
+  defp sudo_fresh_same_user(conn, user) do
+    case conn.assigns[:current_scope] do
+      %Scope{user: %Accounts.User{id: id} = scope_user} when id == user.id ->
+        if Accounts.sudo_mode?(scope_user, @sudo_window_minutes), do: scope_user
+
+      _other ->
+        nil
+    end
+  end
+
+  defp redirect_to_second_factor(conn, user, params) do
+    :telemetry.execute(
+      [:template_phoenix, :accounts, :login],
+      %{count: 1},
+      %{result: :second_factor_required}
+    )
+
+    user_return_to = get_session(conn, :user_return_to)
+
+    conn
+    |> clear_flash()
+    |> renew_session_for_pending()
+    |> put_session(:passkey_2fa_token, Accounts.generate_pending_second_factor_token(user))
+    |> put_session(:passkey_2fa_remember_me, params["remember_me"] == "true")
+    |> put_session(:user_return_to, user_return_to)
+    |> redirect(to: ~p"/users/log-in/two-factor")
+    |> halt()
+  end
+
+  # Always a full renewal: passing no user skips renew_session's
+  # same-user preservation clause, exactly as log_out_user/1 does. The
+  # pending state must never inherit a pre-login (possibly attacker-fixed)
+  # session or an existing logged-in session.
+  defp renew_session_for_pending(conn), do: renew_session(conn, nil)
+
+  @doc """
+  Completes a login whose WebAuthn assertion has just been verified.
+
+  Precondition: the caller consumed a single-use webauthn completion token
+  for `user` (see `Accounts.consume_webauthn_login_token/1`) in this
+  request. This is the ONLY public entry that mints a session without
+  passing the second-factor gate — the consumed token IS the second factor
+  (or, for discoverable logins, both factors).
+  """
+  @spec log_in_user_after_webauthn(Plug.Conn.t(), Accounts.User.t(), map()) :: Plug.Conn.t()
+  def log_in_user_after_webauthn(conn, user, params \\ %{}) do
+    if pending = get_session(conn, :passkey_2fa_token) do
+      Accounts.delete_pending_second_factor_token(pending)
+    end
+
+    conn
+    |> delete_session(:passkey_2fa_token)
+    |> delete_session(:passkey_2fa_remember_me)
+    |> do_log_in_user(user, params)
+  end
+
+  # The single emission point for a successful login, regardless of which
+  # factor(s) minted it. Callers tag the outcome via the internal
+  # `_login_method` param key ("password", "magic_link",
+  # "passkey_second_factor", "passkey_discoverable"); the key is stripped
+  # here, before params flow into session/remember-me handling.
+  defp do_log_in_user(conn, user, params) do
+    {method, params} = Map.pop(params, "_login_method", "unknown")
+
+    :telemetry.execute(
+      [:template_phoenix, :accounts, :login],
+      %{count: 1},
+      %{result: :success, method: method}
+    )
+
+    user_return_to = get_session(conn, :user_return_to)
+
+    conn
+    |> create_or_extend_session(user, params)
+    |> delete_session(:user_return_to)
+    |> redirect(to: user_return_to || signed_in_path(conn))
+  end
+
+  @doc """
+  Logs the user out.
+
+  It clears all session data for safety. See renew_session.
+  """
+  @spec log_out_user(Plug.Conn.t()) :: Plug.Conn.t()
+  def log_out_user(conn) do
+    user_token = get_session(conn, :user_token)
+    user_token && Accounts.delete_user_session_token(user_token)
+
+    if live_socket_id = get_session(conn, :live_socket_id) do
+      TemplatePhoenixWeb.Endpoint.broadcast(live_socket_id, "disconnect", %{})
+    end
+
+    conn
+    |> renew_session(nil)
+    |> delete_resp_cookie(@remember_me_cookie, @remember_me_options)
+    |> redirect(to: ~p"/")
+  end
+
+  @doc """
+  Authenticates the user by looking into the session and remember me token.
+
+  Will reissue the session token if it is older than the configured age.
+  """
+  @spec fetch_current_scope_for_user(Plug.Conn.t(), keyword()) :: Plug.Conn.t()
+  def fetch_current_scope_for_user(conn, _opts) do
+    with {token, conn} <- ensure_user_token(conn),
+         {user, token_inserted_at} <- Accounts.get_user_by_session_token(token) do
+      conn
+      |> assign(:current_scope, Scope.for_user(user))
+      |> maybe_reissue_user_session_token(user, token_inserted_at)
+    else
+      nil -> assign(conn, :current_scope, Scope.for_user(nil))
+    end
+  end
+
+  defp ensure_user_token(conn) do
+    if token = get_session(conn, :user_token) do
+      {token, conn}
+    else
+      conn = fetch_cookies(conn, signed: [@remember_me_cookie])
+
+      if token = conn.cookies[@remember_me_cookie] do
+        {token, conn |> put_token_in_session(token) |> put_session(:user_remember_me, true)}
+      else
+        nil
+      end
+    end
+  end
+
+  # Reissue the session token if it is older than the configured reissue age.
+  defp maybe_reissue_user_session_token(conn, user, token_inserted_at) do
+    token_age = DateTime.diff(DateTime.utc_now(:second), token_inserted_at, :day)
+
+    if token_age >= @session_reissue_age_in_days do
+      create_or_extend_session(conn, user, %{})
+    else
+      conn
+    end
+  end
+
+  # This function is the one responsible for creating session tokens
+  # and storing them safely in the session and cookies. It may be called
+  # either when logging in, during sudo mode, or to renew a session which
+  # will soon expire.
+  #
+  # When the session is created, rather than extended, the renew_session
+  # function will clear the session to avoid fixation attacks. See the
+  # renew_session function to customize this behaviour.
+  defp create_or_extend_session(conn, user, params) do
+    token = Accounts.generate_user_session_token(user)
+    remember_me = get_session(conn, :user_remember_me)
+
+    conn
+    |> renew_session(user)
+    |> put_token_in_session(token)
+    |> maybe_write_remember_me_cookie(token, params, remember_me)
+  end
+
+  # Do not renew session if the user is already logged in
+  # to prevent CSRF errors or data being lost in tabs that are still open
+  defp renew_session(conn, user) when conn.assigns.current_scope.user.id == user.id do
+    conn
+  end
+
+  # This function renews the session ID and erases the whole
+  # session to avoid fixation attacks. If there is any data
+  # in the session you may want to preserve after log in/log out,
+  # you must explicitly fetch the session data before clearing
+  # and then immediately set it after clearing, for example:
+  #
+  #     defp renew_session(conn, _user) do
+  #       delete_csrf_token()
+  #       preferred_locale = get_session(conn, :preferred_locale)
+  #
+  #       conn
+  #       |> configure_session(renew: true)
+  #       |> clear_session()
+  #       |> put_session(:preferred_locale, preferred_locale)
+  #     end
+  #
+  defp renew_session(conn, _user) do
+    delete_csrf_token()
+
+    conn
+    |> configure_session(renew: true)
+    |> clear_session()
+  end
+
+  defp maybe_write_remember_me_cookie(conn, token, %{"remember_me" => "true"}, _),
+    do: write_remember_me_cookie(conn, token)
+
+  defp maybe_write_remember_me_cookie(conn, token, _params, true),
+    do: write_remember_me_cookie(conn, token)
+
+  defp maybe_write_remember_me_cookie(conn, _token, _params, _), do: conn
+
+  defp write_remember_me_cookie(conn, token) do
+    conn
+    |> put_session(:user_remember_me, true)
+    |> put_resp_cookie(@remember_me_cookie, token, @remember_me_options)
+  end
+
+  defp put_token_in_session(conn, token) do
+    conn
+    |> put_session(:user_token, token)
+    |> put_session(:live_socket_id, user_session_topic(token))
+  end
+
+  @doc """
+  Disconnects existing sockets for the given tokens.
+  """
+  @spec disconnect_sessions([Accounts.UserToken.t()]) :: :ok
+  def disconnect_sessions(tokens) do
+    Enum.each(tokens, fn %{token: token} ->
+      TemplatePhoenixWeb.Endpoint.broadcast(user_session_topic(token), "disconnect", %{})
+    end)
+  end
+
+  defp user_session_topic(token), do: "users_sessions:#{Base.url_encode64(token)}"
+
+  @doc """
+  Handles mounting and authenticating the current_scope in LiveViews.
+
+  ## `on_mount` arguments
+
+    * `:mount_current_scope` - Assigns current_scope
+      to socket assigns based on user_token, or nil if
+      there's no user_token or no matching user.
+
+    * `:require_authenticated` - Authenticates the user from the session,
+      and assigns the current_scope to socket assigns based
+      on user_token.
+      Redirects to login page if there's no logged user.
+
+    * `:require_pending_second_factor` - Resolves the pending second-factor
+      token from the session (set by the gate in `log_in_user/3`) and
+      assigns `:pending_user` and `:pending_remember_me`. Redirects to the
+      login page if the token is missing, expired, or the user no longer
+      has passkeys.
+
+  ## Examples
+
+  Use the `on_mount` lifecycle macro in LiveViews to mount or authenticate
+  the `current_scope`:
+
+      defmodule TemplatePhoenixWeb.PageLive do
+        use TemplatePhoenixWeb, :live_view
+
+        on_mount {TemplatePhoenixWeb.UserAuth, :mount_current_scope}
+        ...
+      end
+
+  Or use the `live_session` of your router to invoke the on_mount callback:
+
+      live_session :authenticated, on_mount: [{TemplatePhoenixWeb.UserAuth, :require_authenticated}] do
+        live "/profile", ProfileLive, :index
+      end
+  """
+  @spec on_mount(atom(), map() | :not_mounted_at_router, map(), Phoenix.LiveView.Socket.t()) ::
+          {:cont, Phoenix.LiveView.Socket.t()} | {:halt, Phoenix.LiveView.Socket.t()}
+  def on_mount(:mount_current_scope, _params, session, socket) do
+    {:cont, mount_current_scope(socket, session)}
+  end
+
+  def on_mount(:require_authenticated, _params, session, socket) do
+    socket = mount_current_scope(socket, session)
+
+    if socket.assigns.current_scope && socket.assigns.current_scope.user do
+      {:cont, socket}
+    else
+      socket =
+        socket
+        |> Phoenix.LiveView.put_flash(:error, "You must log in to access this page.")
+        |> Phoenix.LiveView.redirect(to: ~p"/users/log-in")
+
+      {:halt, socket}
+    end
+  end
+
+  def on_mount(:require_sudo_mode, _params, session, socket) do
+    socket = mount_current_scope(socket, session)
+
+    if Accounts.sudo_mode?(socket.assigns.current_scope.user, @sudo_window_minutes) do
+      {:cont, socket}
+    else
+      socket =
+        socket
+        |> Phoenix.LiveView.put_flash(:error, "You must re-authenticate to access this page.")
+        |> Phoenix.LiveView.redirect(to: ~p"/users/log-in")
+
+      {:halt, socket}
+    end
+  end
+
+  def on_mount(:require_pending_second_factor, _params, session, socket) do
+    pending_user =
+      with token when is_binary(token) <- session["passkey_2fa_token"],
+           %Accounts.User{} = user <- Accounts.get_user_by_pending_second_factor_token(token),
+           true <- Passkeys.passkeys_enabled?(user) do
+        user
+      else
+        _invalid -> nil
+      end
+
+    case pending_user do
+      %Accounts.User{} = user ->
+        {:cont,
+         socket
+         |> Phoenix.Component.assign(:pending_user, user)
+         |> Phoenix.Component.assign(
+           :pending_remember_me,
+           session["passkey_2fa_remember_me"] == true
+         )}
+
+      nil ->
+        {:halt,
+         socket
+         |> Phoenix.LiveView.put_flash(:error, "Your sign-in expired. Please log in again.")
+         |> Phoenix.LiveView.redirect(to: ~p"/users/log-in")}
+    end
+  end
+
+  defp mount_current_scope(socket, session) do
+    Phoenix.Component.assign_new(socket, :current_scope, fn ->
+      {user, _} =
+        if user_token = session["user_token"] do
+          Accounts.get_user_by_session_token(user_token)
+        end || {nil, nil}
+
+      Scope.for_user(user)
+    end)
+  end
+
+  @doc "Returns the path to redirect to after log in."
+  @spec signed_in_path(Plug.Conn.t() | Phoenix.LiveView.Socket.t()) :: String.t()
+  # the user was already logged in, redirect to settings
+  def signed_in_path(%Plug.Conn{assigns: %{current_scope: %Scope{user: %Accounts.User{}}}}) do
+    ~p"/users/settings"
+  end
+
+  def signed_in_path(_), do: ~p"/"
+
+  @doc """
+  Plug for routes that require the user to be authenticated.
+  """
+  @spec require_authenticated_user(Plug.Conn.t(), keyword()) :: Plug.Conn.t()
+  def require_authenticated_user(conn, _opts) do
+    if conn.assigns.current_scope && conn.assigns.current_scope.user do
+      conn
+    else
+      conn
+      |> put_flash(:error, "You must log in to access this page.")
+      |> maybe_store_return_to()
+      |> redirect(to: ~p"/users/log-in")
+      |> halt()
+    end
+  end
+
+  defp maybe_store_return_to(%{method: "GET"} = conn) do
+    put_session(conn, :user_return_to, current_path(conn))
+  end
+
+  defp maybe_store_return_to(conn), do: conn
+end
