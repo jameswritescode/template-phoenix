@@ -25,8 +25,9 @@ defmodule Mix.Tasks.Server do
       pin written by the worktrunk pre-start hook) is used instead; when
       neither is set, the app serves plain `localhost`. The subdomain sets
       the endpoint's URL host (via the `PHX_HOST` env var read by
-      `config/dev.exs`) so the server treats it as its hostname and generated
-      URLs use it. The chosen port is likewise passed via `PORT`. Browsers and modern system resolvers resolve
+      `config/runtime.exs` at app start) so the server treats it as its
+      hostname and generated URLs use it. The chosen port is likewise passed
+      via `PORT`. Browsers and modern system resolvers resolve
       `*.localhost` to loopback, so no hosts-file changes are needed.
 
   ## Examples
@@ -53,7 +54,7 @@ defmodule Mix.Tasks.Server do
     System.put_env("PORT", Integer.to_string(port))
     if host, do: System.put_env("PHX_HOST", host)
 
-    Mix.shell().info("Starting server on http://#{host || "localhost"}:#{port}")
+    Mix.shell().info("Starting server on http://#{host || env_phx_host() || "localhost"}:#{port}")
     Mix.Task.run("phx.server", [])
   end
 
@@ -118,6 +119,13 @@ defmodule Mix.Tasks.Server do
     case System.get_env("SUBDOMAIN") do
       empty when empty in [nil, ""] -> nil
       subdomain -> subdomain
+    end
+  end
+
+  defp env_phx_host do
+    case System.get_env("PHX_HOST") do
+      empty when empty in [nil, ""] -> nil
+      host -> host
     end
   end
 

@@ -26,17 +26,21 @@ command accepts the same prefix and targets `template_phoenix_dev_<name>`:
 DB_PARTITION=audit_logs_backfill mise exec -- mix ecto.setup
 ```
 
-- **Pin it per worktree**: `echo 'DB_PARTITION=<name>' > .env` — mise then
-  loads it for every command in that directory. mise env beats shell vars, so
-  with a pin in place `DB_PARTITION=other mise exec -- mix ...` still uses the
-  pin; override one command with `mise exec -- env DB_PARTITION=other mix ...`
+- **Pin it**: set the `DB_PARTITION=<name>` line in `.env`, and mise loads it
+  for every command in that directory. Worktrees already have that line (plus
+  `MIX_TEST_PARTITION`, `PORT`, `SUBDOMAIN`), so edit it rather than
+  overwriting the file with `> .env`, which would drop the other pins and send
+  tests back to the shared test database. mise env beats shell vars, so with a
+  pin in place `DB_PARTITION=other mise exec -- mix ...` still uses the pin;
+  override one command with `mise exec -- env DB_PARTITION=other mix ...`
 - **Standing rule**: while schema work is in flight, never run a bare
   `mix ecto.migrate`, `ecto.rollback`, `ecto.reset`, or backfill `mix run` —
   bare commands hit the shared database, which receives your migration through
   merge, not during development
-- **Tests**: `MIX_TEST_PARTITION=<name> mise exec -- mix test` targets
+- **Tests**: `mise exec -- env MIX_TEST_PARTITION=<name> mix test` targets
   `template_phoenix_test_<name>` (bare name, underscore added automatically)
-- **Tophatting**: `DB_PARTITION=<name> mise exec -- mix server --subdomain tophat-<task>`
+- **Tophatting** (follow the tophat skill; without a pin):
+  `mise exec -- env DB_PARTITION=<name> mix server --free-port --subdomain tophat-<task>`
 
 ## Realistic data for backfills
 

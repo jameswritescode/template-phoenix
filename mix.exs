@@ -40,10 +40,18 @@ defmodule TemplatePhoenix.MixProject do
   # A function alias rather than `cmd shellcheck bin/*.sh`: `mix cmd` does not
   # run through a shell, so the glob would be passed through unexpanded.
   defp shellcheck(_args) do
-    {_output, status} =
-      System.cmd("shellcheck", Path.wildcard("bin/*.sh"), into: IO.stream())
+    case Path.wildcard("bin/*.sh") do
+      [] ->
+        :ok
 
-    if status != 0, do: Mix.raise("shellcheck found issues in bin/*.sh")
+      scripts ->
+        unless System.find_executable("shellcheck") do
+          Mix.raise("shellcheck not found; run through mise (`mise exec -- mix precommit`)")
+        end
+
+        {_output, status} = System.cmd("shellcheck", scripts, into: IO.stream())
+        if status != 0, do: Mix.raise("shellcheck found issues in bin/*.sh")
+    end
   end
 
   defp usage_rules do

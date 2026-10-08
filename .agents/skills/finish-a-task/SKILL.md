@@ -40,13 +40,28 @@ still needed for review fixes, so never tear down at PR time.
 
 1. **Confirm the merge**: `gh pr view <number> --json state` must say
    `MERGED`. Never tear down an open PR's worktree
-2. **Confirm nothing is lost**: `git status` is clean, and every commit is on
-   the remote (`git log @{upstream}..HEAD` prints nothing). A squash-merged
-   branch looking "unmerged" locally is expected. Uncommitted or unpushed work
-   is not, so stop and ask
+2. **Confirm nothing is lost**: `git status` is clean, and all your local
+   commits are part of the merged PR:
+
+   ```sh
+   git fetch origin pull/<number>/head
+   git merge-base --is-ancestor HEAD FETCH_HEAD && echo contained
+   ```
+
+   - This works for squash, rebase, and merge commits alike: it checks the PR
+     branch's head, not the commit that landed on the default branch. It also
+     works after the remote branch is deleted
+   - A PR head ahead of your local HEAD is fine: those are commits made on
+     GitHub (accepted suggestions, "Update branch")
+   - A squash-merged branch looking "unmerged" in `git branch` is expected
+   - Uncommitted work, or a failed check (local commits that never reached the
+     PR), is lost work: stop and ask
 3. **Remove the worktree** (run from anywhere in the repo):
    - **worktrunk**: `wt remove <branch>`. Its pre-remove hook runs
      `bin/drop-partition.sh` for the branch's partition
+     - If wt says the hook needs approval (it asks again whenever the hook
+       changes), stop and ask the user to run `wt config approvals add`;
+       never pass `--yes` yourself
      - It refuses a dirty worktree. Never add `-f` or `-D` to get past that
        without asking
      - Never use `--reap`: it kills every process running from the worktree,
@@ -63,6 +78,11 @@ still needed for review fixes, so never tear down at PR time.
    psql -d postgres -Atc "SELECT datname FROM pg_database WHERE datname ~ '^template_phoenix_(dev|test)_.+' ORDER BY 1"
    ```
 
-   - A partition with no matching worktree (`git worktree list`) is a leak.
-     Drop it with `bin/drop-partition.sh <partition>`
-   - If you can't tell whose a partition is, ask before dropping it
+   - Drop only partitions you can account for: the one belonging to the
+     worktree you just removed, or scratch partitions you created yourself
+   - Ask about everything else. Partitions with no worktree are often
+     deliberate: the database-partition skill and README create named ones
+     (e.g. `checkout_backfill`) from the main checkout, and dropping one
+     destroys the user's work
+   - The query prints full database names; the script takes the suffix:
+     `template_phoenix_dev_my_branch` → `bin/drop-partition.sh my_branch`

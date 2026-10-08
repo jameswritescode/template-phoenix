@@ -29,11 +29,17 @@ mise exec -- mix setup
 pre-merge = "mise exec -- mix precommit && mise exec -- mix cmd --cd assets pnpm test"
 
 # Blocking, before worktree deletion: drop this branch's dev and test
-# partition databases. bin/drop-partition.sh passes the partition explicitly
-# (overriding the worktree .env) and refuses an empty name, so the shared
-# dev/test databases are never targeted. A failing drop (e.g. a server still
+# partition databases. bin/drop-partition.sh passes MIX_ENV and the partition
+# explicitly (overriding the worktree .env) and refuses an empty name, so the
+# shared dev/test databases are never targeted. This runs inside the worktree
+# being removed; a branch older than the script won't contain it, so fall
+# back to the primary worktree's copy. A failing drop (e.g. a server still
 # connected) aborts removal, which is the safe direction.
-pre-remove = "bin/drop-partition.sh {{ branch | sanitize_db }}"
+pre-remove = """
+script=bin/drop-partition.sh; \
+[ -x "$script" ] || script='{{ primary_worktree_path }}/bin/drop-partition.sh'; \
+"$script" {{ branch | sanitize_db }}
+"""
 
 # URL column in `wt list` — matches the SUBDOMAIN and PORT pinned by
 # pre-start (mix server and phx.server both honor those pins).
