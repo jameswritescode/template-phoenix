@@ -5,6 +5,9 @@ This is a web application written using the Phoenix web framework.
 - Before starting any development task, follow the `start-a-task` skill
   (`.agents/skills/start-a-task/`): work happens in an isolated worktree with
   pinned env and database partitions — never directly in the user's checkout
+- When wrapping up, follow the `finish-a-task` skill
+  (`.agents/skills/finish-a-task/`): the gate and PR come first; worktree and
+  partition teardown wait until after the merge
 - Use `mix precommit` alias when you are done with all changes and fix any pending issues
 - Use the already included and available `:req` (`Req`) library for HTTP requests, **avoid** `:httpoison`, `:tesla`, and `:httpc`. Req is included by default and is the preferred HTTP client for Phoenix apps
 

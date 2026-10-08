@@ -4,6 +4,30 @@ A Phoenix 1.8 application template.
 
 ## Starting a new project from this template
 
+Start from a snapshot of the template, not a clone of this repo: a clone
+brings the template's whole commit history into your project.
+
+- **On GitHub (recommended):** click **Use this template**, or:
+
+  ```sh
+  gh repo create my-app --template jameswritescode/template-phoenix --private --clone
+  cd my-app
+  ```
+
+  Your new repo's history starts with a single commit of the template's
+  current files.
+
+- **Without GitHub:** take a shallow clone, then replace its history with a
+  fresh one:
+
+  ```sh
+  git clone --depth 1 https://github.com/jameswritescode/template-phoenix.git my-app
+  cd my-app
+  rm -rf .git && git init && git add -A && git commit -m "Start from template-phoenix"
+  ```
+
+Then, from the new project:
+
 1. **Rename the app** (snake_case name):
 
    ```sh
@@ -95,8 +119,9 @@ mise manages env vars — no dotenv library needed. Three layers, all
 per-directory (each worktree gets its own):
 
 * `mise.toml` `[env]` - committed, shared defaults
-* `.env` - gitignored, loaded by mise via `[env] _.file` (e.g.
-  `echo 'DB_PARTITION=my_task' > .env` in a worktree, then forget it)
+* `.env` - gitignored, loaded by mise via `[env] _.file` (e.g. a
+  `DB_PARTITION=my_task` line, then forget it; in worktrees, edit the existing
+  pins rather than overwriting the file)
 * `mise.local.toml` - gitignored personal overrides
 
 In worktrees created via worktrunk, the pre-start hook pins `PORT`,
@@ -118,7 +143,8 @@ exec: `mise exec -- env DB_PARTITION=x mix ecto.drop`.
 Schema-changing or backfill work shouldn't share the main dev database.
 `DB_PARTITION=<name>` suffixes the dev database (`template_phoenix_dev_<name>`)
 for every mix command, e.g. `DB_PARTITION=checkout_backfill mix ecto.setup`.
-Drop it when done: `DB_PARTITION=checkout_backfill mix ecto.drop`.
+Drop it (and its test-database twin) when done:
+`bin/drop-partition.sh checkout_backfill`.
 
 ### Monitoring
 
