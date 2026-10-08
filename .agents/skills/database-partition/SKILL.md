@@ -1,85 +1,107 @@
 ---
 name: database-partition
-description: Use when a task adds tables, writes or tests migrations, alters schemas, or backfills data — before running any ecto.create/migrate/rollback/reset or seed command — especially in worktrees or when the user and other agents may be using the shared dev database.
+description: Use when a task adds tables, writes or tests migrations, alters schemas, backfills data, or needs a second database — before running any ecto.create/migrate/rollback/reset or seed command.
 ---
 
 # Database partitioning
 
-The shared dev database (`template_phoenix_dev`) belongs to the user's running
-server and other agents. Schema-changing or data-heavy work runs in its own
-partition database.
+Every worktree has its own databases. The start-a-task skill (worktrunk's
+pre-start hook, or its manual fallback) pins `DB_PARTITION` and
+`MIX_TEST_PARTITION` in the worktree's `.env`, so every mix command there
+targets `template_phoenix_dev_<partition>` and
+`template_phoenix_test_<partition>`. That includes bare `mix ecto.migrate`,
+`mix test`, and tophat servers.
 
-**Already in a worktree?** The partition is ambient, not a choice: worktrunk's
-pre-start hook (and the start-a-task skill's fallback) pins `DB_PARTITION` and
-`MIX_TEST_PARTITION` in `.env`, so bare mix commands are already isolated.
-This skill then governs what still needs judgment: what data your partition
-needs (empty + seeds, or the clone below for backfill realism), the
-reversibility checks, and the standing rules — which apply with full force
-whenever you are *not* pinned (the main checkout).
+The shared `template_phoenix_dev` and `template_phoenix_test` belong to the
+user's main checkout. No worktree should ever touch them.
 
-## Use your own partition
-
-Derive a snake_case name from your task and set up in one command — every mix
-command accepts the same prefix and targets `template_phoenix_dev_<name>`:
+## Check the pins before any database command
 
 ```sh
-DB_PARTITION=audit_logs_backfill mise exec -- mix ecto.setup
+mise exec -- env | grep -E '^(DB|MIX_TEST)_PARTITION='
 ```
 
-- **Pin it**: set the `DB_PARTITION=<name>` line in `.env`, and mise loads it
-  for every command in that directory. Worktrees already have that line (plus
-  `MIX_TEST_PARTITION`, `PORT`, `SUBDOMAIN`), so edit it rather than
-  overwriting the file with `> .env`, which would drop the other pins and send
-  tests back to the shared test database. mise env beats shell vars, so with a
-  pin in place `DB_PARTITION=other mise exec -- mix ...` still uses the pin;
-  override one command with `mise exec -- env DB_PARTITION=other mix ...`
-- **Standing rule**: while schema work is in flight, never run a bare
-  `mix ecto.migrate`, `ecto.rollback`, `ecto.reset`, or backfill `mix run` —
-  bare commands hit the shared database, which receives your migration through
-  merge, not during development
-- **Tests**: `mise exec -- env MIX_TEST_PARTITION=<name> mix test` targets
-  `template_phoenix_test_<name>` (bare name, underscore added automatically)
-- **Tophatting** (follow the tophat skill; without a pin):
-  `mise exec -- env DB_PARTITION=<name> mix server --free-port --subdomain tophat-<task>`
+Both lines should show your worktree's partition. If either is missing, your
+commands are aimed at a shared database: stop and fix the worktree setup
+(start-a-task) before running anything. Don't work around a missing pin with
+one-off overrides.
+
+## Your worktree's partition
+
+- `mix setup` created it when the worktree was set up (schema + seeds)
+- Don't change the pin. The worktree's dev server, tests, and teardown all
+  rely on it
+- Rebuild it any time with `mise exec -- mix ecto.reset`. With the pins in
+  place this resets your partition only
+
+## Extra scratch partitions
+
+Sometimes you want a second database: isolating a flaky test, or a
+destructive experiment you don't want to run on your partition. Override one
+command at a time. mise env beats shell vars, so a plain
+`DB_PARTITION=... mise exec -- ...` prefix loses to the pin; put the override
+inside the exec:
+
+```sh
+mise exec -- env DB_PARTITION=<scratch> mix ecto.setup
+mise exec -- env MIX_TEST_PARTITION=<scratch> mix test
+```
+
+Name scratch partitions after your task. Worktree teardown only drops the
+worktree's own partition, so drop scratch ones yourself before finishing:
+`bin/drop-partition.sh <scratch>`.
 
 ## Realistic data for backfills
 
-`ecto.setup` gives schema + seeds only. Clone the shared database when you
-need real data:
+`mix setup` gives schema + seeds only. To backfill against real data, replace
+your partition with a clone of the shared dev database. Stop your own servers
+first, since the drop fails while anything is connected to your partition:
 
 ```sh
-psql -d postgres -c "CREATE DATABASE template_phoenix_dev_<name> TEMPLATE template_phoenix_dev"
+bin/drop-partition.sh <partition>
+psql -d postgres -c "CREATE DATABASE template_phoenix_dev_<partition> TEMPLATE template_phoenix_dev"
+mise exec -- mix ecto.migrate
 ```
 
-Failing with "source database is being accessed by other users" is expected
-while anything is connected — never kill those connections (they are the
-user's). Fall back to `ecto.setup` plus seeding what your backfill needs.
+- `<partition>` is your `DB_PARTITION` from the pin check above
+- The drop goes through the script rather than a bare `mix ecto.drop`
+  because the script names the partition explicitly and refuses an empty
+  one; a bare drop with a missing pin would drop the shared database
+- Cloning only reads the shared database. It fails with "source database is
+  being accessed by other users" while anything is connected to the shared
+  database, usually the user's server. Never kill those connections. Instead,
+  recreate your partition with `mise exec -- mix ecto.setup` and seed what
+  your backfill needs
+- `mix ecto.migrate` applies your branch's migrations on top of the clone
 
 ## Verify migrations both ways
 
-With your `DB_PARTITION` set:
+- `mise exec -- mix ecto.migrations`: the new migration shows `up`
+- `mise exec -- mix ecto.rollback --step 1`, then `mise exec -- mix ecto.migrate`:
+  reversibility proven before anyone else runs it
 
-- `mix ecto.migrations` — the new migration shows `up`
-- `mix ecto.rollback --step 1`, then re-migrate — reversibility proven before
-  anyone else runs it
+## Cleanup
 
-## Cleanup — required
+Your worktree's partition is dropped when the worktree is removed (the
+finish-a-task skill). Only scratch partitions are yours to clean up:
+`bin/drop-partition.sh <scratch>`. It refuses an empty name, which would mean
+the shared databases.
 
-- `bin/drop-partition.sh <name>` — drops both the dev and test partition
-  databases (worktrunk's pre-remove hook runs it for you on worktree removal).
-  It refuses an empty name, which would mean the shared databases
-- Leak check (partitions only, never the shared databases):
-  `psql -d postgres -Atc "SELECT datname FROM pg_database WHERE datname ~ '^template_phoenix_(dev|test)_.+'"`
+Leak check (partitions only, never the shared databases):
+
+```sh
+psql -d postgres -Atc "SELECT datname FROM pg_database WHERE datname ~ '^template_phoenix_(dev|test)_.+'"
+```
 
 ## SQLite projects (ecto_sqlite3)
 
-Some derived projects swap Postgres for SQLite. Same workflow, same rules —
-the database is a file, so three commands differ:
+Some derived projects swap Postgres for SQLite. Same workflow, same rules; the
+database is a file, so three commands differ:
 
-- **Clone**: `sqlite3 template_phoenix_dev.db ".backup template_phoenix_dev_<name>.db"` —
-  never `cp` a live file (mid-write state, missed WAL content)
+- **Clone**: `sqlite3 template_phoenix_dev.db ".backup template_phoenix_dev_<partition>.db"`.
+  Never `cp` a live file (mid-write state, missed WAL content)
 - **Leak check**: `ls template_phoenix_dev_*.db*`
-- **Drop**: `ecto.drop` as above, or delete the file with its `-wal`/`-shm`
-  siblings
+- **Drop**: `bin/drop-partition.sh` works unchanged (it runs `mix ecto.drop`),
+  or delete the file with its `-wal`/`-shm` siblings
 
 (`config/dev.exs` shape: `database: "template_phoenix_dev#{db_partition}.db"`)

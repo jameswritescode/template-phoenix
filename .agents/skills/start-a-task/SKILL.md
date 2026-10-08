@@ -61,8 +61,9 @@ mise exec -- mix setup   # creates template_phoenix_dev_my_branch
 
 ## During the task
 
-- Database work follows the database-partition skill's rules (the pins make
-  bare mix commands safe here, but its standing rules still apply)
+- Database work follows the database-partition skill: check the pins first,
+  then bare mix commands are safe here because they target this worktree's
+  partition
 - Verify user-facing changes with the tophat skill — the worktree's pinned
   `PORT` belongs to the main dev server, so tophat servers scan for a free
   port with `--free-port` (the skill shows the command)

@@ -81,8 +81,8 @@ still needed for review fixes, so never tear down at PR time.
    - Drop only partitions you can account for: the one belonging to the
      worktree you just removed, or scratch partitions you created yourself
    - Ask about everything else. Partitions with no worktree are often
-     deliberate: the database-partition skill and README create named ones
-     (e.g. `checkout_backfill`) from the main checkout, and dropping one
-     destroys the user's work
+     deliberate: the user may create named ones from the main checkout (the
+     README's `checkout_backfill` example), and other agents' worktrees have
+     scratch partitions of their own. Dropping one destroys someone's work
    - The query prints full database names; the script takes the suffix:
      `template_phoenix_dev_my_branch` → `bin/drop-partition.sh my_branch`
